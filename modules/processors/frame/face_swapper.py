@@ -25,12 +25,21 @@ from typing import Tuple
 def create_lower_mouth_mask(
     face: Face, frame: Frame
 ) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
+    """Create a mask around the lower mouth area.
+
+    The previous implementation expanded the mouth polygon in several
+    directions which often resulted in the mask drifting too far down the
+    chin.  This version relies on the convex hull of the outer lip landmarks
+    with only a small configurable padding so the mask sits more naturally on
+    the mouth.
+    """
+
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     mouth_cutout = None
     landmarks = face.landmark_2d_106
+
     if landmarks is not None:
-        #                  0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19 20
-        lower_lip_order = [
+        mouth_indices = [
             65,
             66,
             62,
@@ -51,99 +60,35 @@ def create_lower_mouth_mask(
             4,
             3,
             2,
-            65,
         ]
-        lower_lip_landmarks = landmarks[lower_lip_order].astype(
-            np.float32
-        )  # Use float for precise calculations
 
-        # Calculate the center of the landmarks
-        center = np.mean(lower_lip_landmarks, axis=0)
+        mouth_points = landmarks[mouth_indices].astype(np.int32)
+        hull = cv2.convexHull(mouth_points)
 
-        # Expand the landmarks outward
-        expansion_factor = (
-            1 + modules.globals.mask_down_size
-        )  # Adjust this for more or less expansion
-        expanded_landmarks = (lower_lip_landmarks - center) * expansion_factor + center
+        x, y, w, h = cv2.boundingRect(hull)
 
-        # Extend the top lip part
-        toplip_indices = [
-            20,
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-        ]  # Indices for landmarks 2, 65, 66, 62, 70, 69, 18
-        toplip_extension = (
-            modules.globals.mask_size * 0.75
-        )  # Adjust this factor to control the extension
-        for idx in toplip_indices:
-            direction = expanded_landmarks[idx] - center
-            direction = direction / np.linalg.norm(direction)
-            expanded_landmarks[idx] += direction * toplip_extension
+        pad_x = int(w * 0.05 * modules.globals.mask_size)
+        pad_top = int(h * 0.02)
+        pad_bottom = int(h * modules.globals.mask_down_size)
 
-        # Extend the bottom part (chin area)
-        chin_indices = [
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-        ]  # Indices for landmarks 21, 22, 23, 24, 0, 8
-        chin_extension = 0.1  # reduced to avoid drifting too far downward
-        for idx in chin_indices:
-            expanded_landmarks[idx][1] += (
-                expanded_landmarks[idx][1] - center[1]
-            ) * chin_extension
+        min_x = max(0, x - pad_x)
+        min_y = max(0, y - pad_top)
+        max_x = min(frame.shape[1], x + w + pad_x)
+        max_y = min(frame.shape[0], y + h + pad_bottom)
 
-        # prevent the mask from sliding below the actual upper lip
-        toplip_y_original = np.min(lower_lip_landmarks[toplip_indices, 1])
-        toplip_y_expanded = np.min(expanded_landmarks[toplip_indices, 1])
-        if toplip_y_expanded > toplip_y_original:
-            offset_y = toplip_y_expanded - toplip_y_original
-            expanded_landmarks[:, 1] -= offset_y
-
-        # Convert back to integer coordinates
-        expanded_landmarks = expanded_landmarks.astype(np.int32)
-
-        # Calculate bounding box for the expanded lower mouth
-        min_x, min_y = np.min(expanded_landmarks, axis=0)
-        max_x, max_y = np.max(expanded_landmarks, axis=0)
-
-        # Add some padding to the bounding box
-        padding = int((max_x - min_x) * 0.1)  # 10% padding
-        min_x = max(0, min_x - padding)
-        min_y = max(0, min_y - padding)
-        max_x = min(frame.shape[1], max_x + padding)
-        max_y = min(frame.shape[0], max_y + padding)
-
-        # Ensure the bounding box dimensions are valid
-        if max_x <= min_x or max_y <= min_y:
-            if (max_x - min_x) <= 1:
-                max_x = min_x + 1
-            if (max_y - min_y) <= 1:
-                max_y = min_y + 1
-
-        # Create the mask
         mask_roi = np.zeros((max_y - min_y, max_x - min_x), dtype=np.uint8)
-        cv2.fillPoly(mask_roi, [expanded_landmarks - [min_x, min_y]], 255)
+        shifted_hull = hull - [min_x, min_y]
+        cv2.fillConvexPoly(mask_roi, shifted_hull, 255)
 
-        # Apply Gaussian blur to soften the mask edges
         mask_roi = cv2.GaussianBlur(mask_roi, (15, 15), 5)
-
-        # Place the mask ROI in the full-sized mask
         mask[min_y:max_y, min_x:max_x] = mask_roi
 
-        # Extract the masked area from the frame
         mouth_cutout = frame[min_y:max_y, min_x:max_x].copy()
+        lower_lip_polygon = hull
 
-        # Return the expanded lower lip polygon in original frame coordinates
-        lower_lip_polygon = expanded_landmarks
+        return mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon
 
-    return mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon
+    return mask, mouth_cutout, (0, 0, 0, 0), None
 
 
 def draw_mouth_mask_visualization(
