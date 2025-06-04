@@ -25,13 +25,10 @@ from typing import Tuple
 def create_lower_mouth_mask(
     face: Face, frame: Frame
 ) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
-    """Create a mask around the lower mouth area.
+    """Create a mask tightly around the mouth area (no chin extension).
 
-    The previous implementation expanded the mouth polygon in several
-    directions which often resulted in the mask drifting too far down the
-    chin.  This version relies on the convex hull of the outer lip landmarks
-    with only a small configurable padding so the mask sits more naturally on
-    the mouth.
+    This version uses only the convex hull of the outer lip landmarks
+    with no padding, so the mask does not extend past the mouth.
     """
 
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
@@ -39,53 +36,30 @@ def create_lower_mouth_mask(
     landmarks = face.landmark_2d_106
 
     if landmarks is not None:
+        # Outer lip indices for 106-point model
         mouth_indices = [
-            65,
-            66,
-            62,
-            70,
-            69,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            0,
-            8,
-            7,
-            6,
-            5,
-            4,
-            3,
-            2,
+            65, 66, 62, 70, 69, 18, 19, 20, 21, 22, 23, 24, 0, 8, 7, 6, 5, 4, 3, 2
         ]
-
         mouth_points = landmarks[mouth_indices].astype(np.int32)
         hull = cv2.convexHull(mouth_points)
-
         x, y, w, h = cv2.boundingRect(hull)
 
-        pad_x = int(w * 0.05 * modules.globals.mask_size)
-        pad_top = int(h * 0.02)
-        pad_bottom = int(h * modules.globals.mask_down_size)
-
-        min_x = max(0, x - pad_x)
-        min_y = max(0, y - pad_top)
-        max_x = min(frame.shape[1], x + w + pad_x)
-        max_y = min(frame.shape[0], y + h + pad_bottom)
+        # No padding: mask is strictly the mouth region
+        min_x = x
+        min_y = y
+        max_x = x + w
+        max_y = y + h
 
         mask_roi = np.zeros((max_y - min_y, max_x - min_x), dtype=np.uint8)
         shifted_hull = hull - [min_x, min_y]
         cv2.fillConvexPoly(mask_roi, shifted_hull, 255)
 
-        mask_roi = cv2.GaussianBlur(mask_roi, (15, 15), 5)
+        # Optional: very slight blur for feathering, but not enough to extend past mouth
+        mask_roi = cv2.GaussianBlur(mask_roi, (5, 5), 1)
         mask[min_y:max_y, min_x:max_x] = mask_roi
 
         mouth_cutout = frame[min_y:max_y, min_x:max_x].copy()
         lower_lip_polygon = hull
-
         return mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon
 
     return mask, mouth_cutout, (0, 0, 0, 0), None
