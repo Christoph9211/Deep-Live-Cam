@@ -39,5 +39,5 @@ show_fps = False
 mouth_mask = False
 show_mouth_mask_box = False
 mask_feather_ratio = 8
-mask_down_size = 0.50
+mask_down_size = 0.1
 mask_size = 1

@@ -20,9 +20,11 @@ THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
 
 
+from typing import Tuple
+
 def create_lower_mouth_mask(
     face: Face, frame: Frame
-) -> (np.ndarray, np.ndarray, tuple, np.ndarray):
+) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     mouth_cutout = None
     landmarks = face.landmark_2d_106
@@ -75,7 +77,7 @@ def create_lower_mouth_mask(
             5,
         ]  # Indices for landmarks 2, 65, 66, 62, 70, 69, 18
         toplip_extension = (
-            modules.globals.mask_size * 0.5
+            modules.globals.mask_size * 0.75
         )  # Adjust this factor to control the extension
         for idx in toplip_indices:
             direction = expanded_landmarks[idx] - center
