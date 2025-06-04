@@ -21,7 +21,7 @@ NAME = 'DLC.FACE-SWAPPER'
 
 
 def create_lower_mouth_mask(
-    face: Face, frame: Frame # type: ignore
+    face: Face, frame: Frame 
 ) -> tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     mouth_cutout = None
@@ -91,7 +91,7 @@ def create_lower_mouth_mask(
             15,
             16,
         ]  # Indices for landmarks 21, 22, 23, 24, 0, 8
-        chin_extension = 2 * 0.2  # Adjust this factor to control the extension
+        chin_extension = 0.1  # Adjust this factor to control the extension
         for idx in chin_indices:
             expanded_landmarks[idx][1] += (
                 expanded_landmarks[idx][1] - center[1]
@@ -138,7 +138,7 @@ def create_lower_mouth_mask(
 
 
 def draw_mouth_mask_visualization(
-    frame: Frame, face: Face, mouth_mask_data: tuple # type: ignore
+    frame: Frame, face: Face, mouth_mask_data: tuple 
 ) -> Frame:
     landmarks = face.landmark_2d_106
     if landmarks is not None and mouth_mask_data is not None:
@@ -263,7 +263,7 @@ def apply_mouth_area(
     return frame
 
 
-def create_face_mask(face: Face, frame: Frame) -> np.ndarray: # type: ignore
+def create_face_mask(face: Face, frame: Frame) -> np.ndarray: 
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     landmarks = face.landmark_2d_106
     if landmarks is not None:
@@ -399,7 +399,7 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame: # type: ignore
+def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     swapper = get_face_swapper()
     if swapper is None:
         update_status("Face swapper model not loaded, skipping swap.", NAME)
@@ -426,7 +426,7 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     return swapped_frame
 
 
-def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # type: ignore
+def process_frame(source_face: Face, temp_frame: Frame) -> Frame: 
     # --- No changes needed in process_frame ---
     # Ensure the frame is in RGB format if color correction is enabled
     # Note: InsightFace swapper often expects BGR by default. Double-check if color issues appear.
