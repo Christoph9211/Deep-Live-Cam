@@ -21,8 +21,8 @@ NAME = 'DLC.FACE-SWAPPER'
 
 
 def create_lower_mouth_mask(
-    face: Face, frame: Frame 
-) -> tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
+    face: Face, frame: Frame
+) -> (np.ndarray, np.ndarray, tuple, np.ndarray):
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     mouth_cutout = None
     landmarks = face.landmark_2d_106
@@ -91,11 +91,18 @@ def create_lower_mouth_mask(
             15,
             16,
         ]  # Indices for landmarks 21, 22, 23, 24, 0, 8
-        chin_extension = 0.1  # Adjust this factor to control the extension
+        chin_extension = 0.1  # reduced to avoid drifting too far downward
         for idx in chin_indices:
             expanded_landmarks[idx][1] += (
                 expanded_landmarks[idx][1] - center[1]
             ) * chin_extension
+
+        # prevent the mask from sliding below the actual upper lip
+        toplip_y_original = np.min(lower_lip_landmarks[toplip_indices, 1])
+        toplip_y_expanded = np.min(expanded_landmarks[toplip_indices, 1])
+        if toplip_y_expanded > toplip_y_original:
+            offset_y = toplip_y_expanded - toplip_y_original
+            expanded_landmarks[:, 1] -= offset_y
 
         # Convert back to integer coordinates
         expanded_landmarks = expanded_landmarks.astype(np.int32)
@@ -138,7 +145,7 @@ def create_lower_mouth_mask(
 
 
 def draw_mouth_mask_visualization(
-    frame: Frame, face: Face, mouth_mask_data: tuple 
+    frame: Frame, face: Face, mouth_mask_data: tuple
 ) -> Frame:
     landmarks = face.landmark_2d_106
     if landmarks is not None and mouth_mask_data is not None:
@@ -263,7 +270,7 @@ def apply_mouth_area(
     return frame
 
 
-def create_face_mask(face: Face, frame: Frame) -> np.ndarray: 
+def create_face_mask(face: Face, frame: Frame) -> np.ndarray:
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     landmarks = face.landmark_2d_106
     if landmarks is not None:
@@ -399,13 +406,31 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame: # type: ignore
     swapper = get_face_swapper()
     if swapper is None:
         update_status("Face swapper model not loaded, skipping swap.", NAME)
         return temp_frame
 
     swapped_frame = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+
+    if modules.globals.mouth_mask:
+        face_mask = create_face_mask(target_face, temp_frame)
+        mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(
+            target_face, temp_frame
+        )
+
+        swapped_frame = apply_mouth_area(
+            swapped_frame, mouth_cutout, mouth_box, face_mask, lower_lip_polygon
+        )
+
+        if modules.globals.show_mouth_mask_box:
+            mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
+            swapped_frame = draw_mouth_mask_visualization(
+                swapped_frame, target_face, mouth_mask_data
+            )
+
+    return swapped_frame
 
     if modules.globals.mouth_mask:
         face_mask = create_face_mask(target_face, temp_frame)
