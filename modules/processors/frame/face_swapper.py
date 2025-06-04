@@ -21,8 +21,8 @@ NAME = 'DLC.FACE-SWAPPER'
 
 
 def create_lower_mouth_mask(
-    face: Face, frame: Frame
-) -> (np.ndarray, np.ndarray, tuple, np.ndarray):
+    face: Face, frame: Frame # type: ignore
+) -> tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     mouth_cutout = None
     landmarks = face.landmark_2d_106
@@ -138,7 +138,7 @@ def create_lower_mouth_mask(
 
 
 def draw_mouth_mask_visualization(
-    frame: Frame, face: Face, mouth_mask_data: tuple
+    frame: Frame, face: Face, mouth_mask_data: tuple # type: ignore
 ) -> Frame:
     landmarks = face.landmark_2d_106
     if landmarks is not None and mouth_mask_data is not None:
@@ -263,7 +263,7 @@ def apply_mouth_area(
     return frame
 
 
-def create_face_mask(face: Face, frame: Frame) -> np.ndarray:
+def create_face_mask(face: Face, frame: Frame) -> np.ndarray: # type: ignore
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     landmarks = face.landmark_2d_106
     if landmarks is not None:
