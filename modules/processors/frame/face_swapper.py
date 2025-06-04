@@ -44,23 +44,30 @@ def create_lower_mouth_mask(
         hull = cv2.convexHull(mouth_points)
         x, y, w, h = cv2.boundingRect(hull)
 
-        # No padding: mask is strictly the mouth region
-        min_x = x
-        min_y = y
-        max_x = x + w
-        max_y = y + h
+        # Clip coordinates to ensure we do not index outside of the frame
+        frame_height, frame_width = frame.shape[:2]
+        min_x, min_y = x, y
+        max_x, max_y = x + w, y + h
+        clip_min_x = max(min_x, 0)
+        clip_min_y = max(min_y, 0)
+        clip_max_x = min(max_x, frame_width)
+        clip_max_y = min(max_y, frame_height)
 
-        mask_roi = np.zeros((max_y - min_y, max_x - min_x), dtype=np.uint8)
-        shifted_hull = hull - [min_x, min_y]
-        cv2.fillConvexPoly(mask_roi, shifted_hull, 255)
+        mask_roi_full = np.zeros((h, w), dtype=np.uint8)
+        shifted_hull = hull - [x, y]
+        cv2.fillConvexPoly(mask_roi_full, shifted_hull, 255)
 
         # Optional: very slight blur for feathering, but not enough to extend past mouth
-        mask_roi = cv2.GaussianBlur(mask_roi, (5, 5), 1)
-        mask[min_y:max_y, min_x:max_x] = mask_roi
+        mask_roi_full = cv2.GaussianBlur(mask_roi_full, (5, 5), 1)
 
-        mouth_cutout = frame[min_y:max_y, min_x:max_x].copy()
+        # Crop ROI if clipping occurred
+        mask_roi = mask_roi_full[clip_min_y - y : clip_max_y - y, clip_min_x - x : clip_max_x - x]
+
+        mask[clip_min_y:clip_max_y, clip_min_x:clip_max_x] = mask_roi
+
+        mouth_cutout = frame[clip_min_y:clip_max_y, clip_min_x:clip_max_x].copy()
         lower_lip_polygon = hull
-        return mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon
+        return mask, mouth_cutout, (clip_min_x, clip_min_y, clip_max_x, clip_max_y), lower_lip_polygon
 
     return mask, mouth_cutout, (0, 0, 0, 0), None
 
