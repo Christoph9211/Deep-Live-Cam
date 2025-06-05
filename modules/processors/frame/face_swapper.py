@@ -91,7 +91,7 @@ def draw_mouth_mask_visualization(
         # Adjust mask to match the region size
         mask_region = mask[0 : max_y - min_y, 0 : max_x - min_x]
 
-        vis_region = vis_frame[min_y:max_y, min_x:max_x]
+        # vis_region = vis_frame[min_y:max_y, min_x:max_x]
 
         # Draw the lower lip polygon
         cv2.polylines(vis_frame, [lower_lip_polygon], True, (0, 255, 0), 2)
@@ -206,9 +206,9 @@ def create_face_mask(face: Face, frame: Frame) -> np.ndarray: # type: ignore
 
         right_side_face = landmarks[0:16]
         left_side_face = landmarks[17:32]
-        right_eye = landmarks[33:42]
+        # right_eye = landmarks[33:42]
         right_eye_brow = landmarks[43:51]
-        left_eye = landmarks[87:96]
+        # left_eye = landmarks[87:96]
         left_eye_brow = landmarks[97:105]
 
         right_eyebrow_top = np.min(right_eye_brow[:, 1])
@@ -341,24 +341,6 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         return temp_frame
 
     swapped_frame = swapper.get(temp_frame, target_face, source_face, paste_back=True)
-
-    if modules.globals.mouth_mask:
-        face_mask = create_face_mask(target_face, temp_frame)
-        mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(
-            target_face, temp_frame
-        )
-
-        swapped_frame = apply_mouth_area(
-            swapped_frame, mouth_cutout, mouth_box, face_mask, lower_lip_polygon
-        )
-
-        if modules.globals.show_mouth_mask_box:
-            mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
-            swapped_frame = draw_mouth_mask_visualization(
-                swapped_frame, target_face, mouth_mask_data
-            )
-
-    return swapped_frame
 
     if modules.globals.mouth_mask:
         face_mask = create_face_mask(target_face, temp_frame)
