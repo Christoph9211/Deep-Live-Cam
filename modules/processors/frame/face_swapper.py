@@ -284,7 +284,9 @@ def pre_check() -> bool:
 
 
 def pre_start() -> bool:
-    # --- No changes needed in pre_start ---
+    global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
+    STREAM_SOURCE_FACE = None
+    STREAM_FRAME_IDX = 0
     if not modules.globals.map_faces and not is_image(modules.globals.source_path):
         update_status('Select an image for source path.', NAME)
         return False
@@ -388,7 +390,7 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:  # type: ignor
     return temp_frame
 
 
-def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
+def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
     # --- No changes needed in process_frame_v2 ---
     # (Assuming swap_face handles the potential None return from get_face_swapper)
     if is_image(modules.globals.target_path):
@@ -409,7 +411,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
         if modules.globals.many_faces:
             source_face = default_source_face()
             for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
+                target_frame = [f for f in map_entry['target_faces_in_frame'] if (f.get('location') == frame_id or f.get('frame') == frame_id)]
 
                 for frame in target_frame:
                     for target_face in frame['faces']:
@@ -418,7 +420,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
         elif not modules.globals.many_faces:
             for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
                 if "source" in map_entry:
-                    target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
+                    target_frame = [f for f in map_entry['target_faces_in_frame'] if (f.get('location') == frame_id or f.get('frame') == frame_id)]
                     source_face = map_entry['source']['face']
 
                     for frame in target_frame:
@@ -530,10 +532,11 @@ def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
 
 
 STREAM_SOURCE_FACE = None
+STREAM_FRAME_IDX = 0
 
 
 def process_frame_stream(source_path: str, frame: Frame) -> Frame:
-    global STREAM_SOURCE_FACE
+    global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
     if not modules.globals.map_faces:
         if STREAM_SOURCE_FACE is None:
             source_img = cv2.imread(source_path)
@@ -543,4 +546,6 @@ def process_frame_stream(source_path: str, frame: Frame) -> Frame:
             return process_frame(STREAM_SOURCE_FACE, frame)
         return frame
     else:
-        return process_frame_v2(frame)
+        processed = process_frame_v2(frame, STREAM_FRAME_IDX)
+        STREAM_FRAME_IDX += 1
+        return processed

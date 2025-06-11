@@ -259,44 +259,7 @@ def start() -> None:
     if modules.globals.nsfw_filter and ui.check_and_ignore_nsfw(modules.globals.target_path, destroy):
         return
 
-    if not modules.globals.map_faces:
-        stream_video()
-        if is_video(modules.globals.target_path):
-            update_status('Processing to video succeed!')
-        else:
-            update_status('Processing to video failed!')
-        return
-
-    update_status('Creating temp resources...')
-    create_temp(modules.globals.target_path)
-    update_status('Extracting frames...')
-    extract_frames(modules.globals.target_path)
-
-    temp_frame_paths = get_temp_frame_paths(modules.globals.target_path)
-    for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
-        update_status('Progressing...', frame_processor.NAME)
-        frame_processor.process_video(modules.globals.source_path, temp_frame_paths)
-        release_resources()
-    # handles fps
-    if modules.globals.keep_fps:
-        update_status('Detecting fps...')
-        fps = detect_fps(modules.globals.target_path)
-        update_status(f'Creating video with {fps} fps...')
-        create_video(modules.globals.target_path, fps)
-    else:
-        update_status('Creating video with 30.0 fps...')
-        create_video(modules.globals.target_path)
-    # handle audio
-    if modules.globals.keep_audio:
-        if modules.globals.keep_fps:
-            update_status('Restoring audio...')
-        else:
-            update_status('Restoring audio might cause issues as fps are not kept...')
-        restore_audio(modules.globals.target_path, modules.globals.output_path)
-    else:
-        move_temp(modules.globals.target_path, modules.globals.output_path)
-    # clean and validate
-    clean_temp(modules.globals.target_path)
+    stream_video()
     if is_video(modules.globals.target_path):
         update_status('Processing to video succeed!')
     else:
