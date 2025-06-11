@@ -99,25 +99,31 @@ def get_unique_faces_from_target_video() -> Any:
         modules.globals.source_target_map = []
         frame_face_embeddings = []
         face_embeddings = []
-    
-        print('Creating temp resources...')
-        clean_temp(modules.globals.target_path)
-        create_temp(modules.globals.target_path)
-        print('Extracting frames...')
-        extract_frames(modules.globals.target_path)
+        frame_images = {}
 
-        temp_frame_paths = get_temp_frame_paths(modules.globals.target_path)
+        cap = cv2.VideoCapture(modules.globals.target_path)
+        if not cap.isOpened():
+            return None
 
         i = 0
-        for temp_frame_path in tqdm(temp_frame_paths, desc="Extracting face embeddings from frames"):
-            temp_frame = cv2.imread(temp_frame_path)
-            many_faces = get_many_faces(temp_frame)
+        progress = tqdm(desc="Extracting face embeddings from frames")
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            many_faces = get_many_faces(frame)
 
             for face in many_faces:
                 face_embeddings.append(face.normed_embedding)
-            
-            frame_face_embeddings.append({'frame': i, 'faces': many_faces, 'location': temp_frame_path})
+
+            frame_images[i] = frame
+            frame_face_embeddings.append({'frame': i, 'faces': many_faces})
             i += 1
+            progress.update(1)
+
+        progress.close()
+
+        cap.release()
 
         centroids = find_cluster_centroids(face_embeddings)
 
@@ -126,46 +132,43 @@ def get_unique_faces_from_target_video() -> Any:
                 closest_centroid_index, _ = find_closest_centroid(centroids, face.normed_embedding)
                 face['target_centroid'] = closest_centroid_index
 
-        for i in range(len(centroids)):
-            modules.globals.source_target_map.append({
-                'id' : i
-            })
+        for idx in range(len(centroids)):
+            modules.globals.source_target_map.append({'id': idx})
 
             temp = []
-            for frame in tqdm(frame_face_embeddings, desc=f"Mapping frame embeddings to centroids-{i}"):
-                temp.append({'frame': frame['frame'], 'faces': [face for face in frame['faces'] if face['target_centroid'] == i], 'location': frame['location']})
+            for frame in tqdm(frame_face_embeddings, desc=f"Mapping frame embeddings to centroids-{idx}"):
+                temp.append({'frame': frame['frame'], 'faces': [f for f in frame['faces'] if f['target_centroid'] == idx]})
 
-            modules.globals.source_target_map[i]['target_faces_in_frame'] = temp
+            modules.globals.source_target_map[idx]['target_faces_in_frame'] = temp
 
-        # dump_faces(centroids, frame_face_embeddings)
-        default_target_face()
+        default_target_face(frame_images)
     except ValueError:
         return None
     
 
-def default_target_face():
-    for map in modules.globals.source_target_map:
+def default_target_face(frame_images: dict) -> None:
+    for mapping in modules.globals.source_target_map:
         best_face = None
-        best_frame = None
-        for frame in map['target_faces_in_frame']:
+        best_frame_idx = None
+        for frame in mapping['target_faces_in_frame']:
             if len(frame['faces']) > 0:
                 best_face = frame['faces'][0]
-                best_frame = frame
+                best_frame_idx = frame['frame']
                 break
 
-        for frame in map['target_faces_in_frame']:
+        for frame in mapping['target_faces_in_frame']:
             for face in frame['faces']:
                 if face['det_score'] > best_face['det_score']:
                     best_face = face
-                    best_frame = frame
+                    best_frame_idx = frame['frame']
 
         x_min, y_min, x_max, y_max = best_face['bbox']
 
-        target_frame = cv2.imread(best_frame['location'])
-        map['target'] = {
-                        'cv2' : target_frame[int(y_min):int(y_max), int(x_min):int(x_max)],
-                        'face' : best_face
-                        }
+        target_frame = frame_images.get(best_frame_idx)
+        mapping['target'] = {
+            'cv2': target_frame[int(y_min):int(y_max), int(x_min):int(x_max)],
+            'face': best_face,
+        }
 
 
 def dump_faces(centroids: Any, frame_face_embeddings: list):
