@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any, List, Optional
 import cv2
 import threading
 import gfpgan
@@ -74,20 +74,13 @@ def enhance_face(temp_frame: Frame) -> Frame:
     return temp_frame
 
 
-from typing import Optional
+def process_frame(source_face: Optional[Face], temp_frame: Frame) -> Frame:
+    """Enhance the face present in ``temp_frame``.
 
-def process_frame(temp_frame: Frame) -> Frame:
-    """Process a frame by enhancing its face (if found)."""
+    ``source_face`` is accepted for API compatibility but ignored since this
+    processor only operates on the target frame.
     """
-    Apply face enhancement to a frame.
 
-    Args:
-        source_face (Face | None): The source face. Ignored.
-        temp_frame (Frame): The frame to enhance.
-
-    Returns:
-        Frame: The enhanced frame.
-    """
     target_face = get_one_face(temp_frame)
     if target_face is not None:
         temp_frame = enhance_face(temp_frame)
