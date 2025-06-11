@@ -74,15 +74,28 @@ def enhance_face(temp_frame: Frame) -> Frame:
     return temp_frame
 
 
-def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # type: ignore
+from typing import Optional
+
+def process_frame(temp_frame: Frame) -> Frame:
+    """Process a frame by enhancing its face (if found)."""
+    """
+    Apply face enhancement to a frame.
+
+    Args:
+        source_face (Face | None): The source face. Ignored.
+        temp_frame (Frame): The frame to enhance.
+
+    Returns:
+        Frame: The enhanced frame.
+    """
     target_face = get_one_face(temp_frame)
-    if target_face:
+    if target_face is not None:
         temp_frame = enhance_face(temp_frame)
     return temp_frame
 
 
 def process_frames(
-    source_path: str, temp_frame_paths: List[str], progress: Any = None
+    temp_frame_paths: List[str], progress: Any = None
 ) -> None:
     for temp_frame_path in temp_frame_paths:
         temp_frame = cv2.imread(temp_frame_path)
@@ -92,13 +105,13 @@ def process_frames(
             progress.update(1)
 
 
-def process_image(source_path: str, target_path: str, output_path: str) -> None:
+def process_image(target_path: str, output_path: str) -> None:
     target_frame = cv2.imread(target_path)
     result = process_frame(None, target_frame)
     cv2.imwrite(output_path, result)
 
 
-def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
+def process_video(temp_frame_paths: List[str]) -> None:
     modules.processors.frame.core.process_video(None, temp_frame_paths, process_frames)
 
 
@@ -109,6 +122,7 @@ def process_frame_v2(temp_frame: Frame) -> Frame:
     return temp_frame
 
 
-def process_frame_stream(source_path: str, frame: Frame) -> Frame:
-    return process_frame(None, frame)
+def process_frame_stream(frame: Frame) -> Frame:
+    """Process a frame stream by enhancing faces in the frame."""
+    return process_frame_v2(frame)
 
