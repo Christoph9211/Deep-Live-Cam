@@ -265,6 +265,8 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         cursor="hand2",
         command=lambda: (
             setattr(modules.globals, "map_faces", map_faces.get()),
+            setattr(modules.globals, "many_faces", False if map_faces.get() else modules.globals.many_faces),
+            many_faces_value.set(False) if map_faces.get() else None,
             save_switch_states(),
             close_mapper_window() if not map_faces.get() else None
         ),

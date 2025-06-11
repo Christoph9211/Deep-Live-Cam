@@ -391,64 +391,88 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:  # type: ignor
 
 
 def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
-    # --- No changes needed in process_frame_v2 ---
-    # (Assuming swap_face handles the potential None return from get_face_swapper)
-    if is_image(modules.globals.target_path):
-        if modules.globals.many_faces:
-            source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                target_face = map_entry['target']['face']
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+    """Swap faces according to mapping rules.
 
-        elif not modules.globals.many_faces:
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
+    When ``map_faces`` is enabled it now takes priority over ``many_faces`` so
+    that each source/target pair is honoured even if ``many_faces`` is also
+    active.
+    """
+
+    # process image targets -------------------------------------------------
+    if is_image(modules.globals.target_path):
+        if modules.globals.map_faces:
+            for map_entry in modules.globals.source_target_map:
                 if "source" in map_entry:
                     source_face = map_entry['source']['face']
                     target_face = map_entry['target']['face']
                     temp_frame = swap_face(source_face, target_face, temp_frame)
-
-    elif is_video(modules.globals.target_path):
-        if modules.globals.many_faces:
+        elif modules.globals.many_faces:
             source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                target_frame = [f for f in map_entry['target_faces_in_frame'] if (f.get('location') == frame_id or f.get('frame') == frame_id)]
+            for map_entry in modules.globals.source_target_map:
+                target_face = map_entry['target']['face']
+                temp_frame = swap_face(source_face, target_face, temp_frame)
 
+    # process video targets --------------------------------------------------
+    elif is_video(modules.globals.target_path):
+        if modules.globals.map_faces:
+            for map_entry in modules.globals.source_target_map:
+                if "source" in map_entry:
+                    target_frame = [
+                        f for f in map_entry['target_faces_in_frame']
+                        if (f.get('location') == frame_id or f.get('frame') == frame_id)
+                    ]
+                    source_face = map_entry['source']['face']
+                    for frame in target_frame:
+                        for target_face in frame['faces']:
+                            temp_frame = swap_face(source_face, target_face, temp_frame)
+        elif modules.globals.many_faces:
+            source_face = default_source_face()
+            for map_entry in modules.globals.source_target_map:
+                target_frame = [
+                    f for f in map_entry['target_faces_in_frame']
+                    if (f.get('location') == frame_id or f.get('frame') == frame_id)
+                ]
                 for frame in target_frame:
                     for target_face in frame['faces']:
                         temp_frame = swap_face(source_face, target_face, temp_frame)
 
-        elif not modules.globals.many_faces:
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                if "source" in map_entry:
-                    target_frame = [f for f in map_entry['target_faces_in_frame'] if (f.get('location') == frame_id or f.get('frame') == frame_id)]
-                    source_face = map_entry['source']['face']
-
-                    for frame in target_frame:
-                        for target_face in frame['faces']:
-                            temp_frame = swap_face(source_face, target_face, temp_frame)
-    else: # Fallback for neither image nor video (e.g., live feed?)
+    # fallback for live feed -------------------------------------------------
+    else:
         detected_faces = get_many_faces(temp_frame)
-        if modules.globals.many_faces:
-            if detected_faces:
-                source_face = default_source_face()
-                for target_face in detected_faces:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+        if modules.globals.map_faces and detected_faces and hasattr(modules.globals, 'simple_map') and modules.globals.simple_map:
+            if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
+                for detected_face in detected_faces:
+                    closest_centroid_index, _ = find_closest_centroid(
+                        modules.globals.simple_map['target_embeddings'],
+                        detected_face.normed_embedding,
+                    )
+                    temp_frame = swap_face(
+                        modules.globals.simple_map['source_faces'][closest_centroid_index],
+                        detected_face,
+                        temp_frame,
+                    )
+            else:
+                detected_faces_centroids = [face.normed_embedding for face in detected_faces]
+                for i, target_embedding in enumerate(modules.globals.simple_map['target_embeddings']):
+                    closest_centroid_index, _ = find_closest_centroid(
+                        detected_faces_centroids, target_embedding
+                    )
+                    if closest_centroid_index < len(detected_faces):
+                        temp_frame = swap_face(
+                            modules.globals.simple_map['source_faces'][i],
+                            detected_faces[closest_centroid_index],
+                            temp_frame,
+                        )
+        elif modules.globals.many_faces and detected_faces:
+            source_face = default_source_face()
+            for target_face in detected_faces:
+                temp_frame = swap_face(source_face, target_face, temp_frame)
+        elif detected_faces:
+            target_face = detected_faces[0]
+            source_face = default_source_face()
+            if source_face:
+                temp_frame = swap_face(source_face, target_face, temp_frame)
 
-        elif not modules.globals.many_faces:
-            if detected_faces and hasattr(modules.globals, 'simple_map') and modules.globals.simple_map: # Check simple_map exists
-                if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
-                    for detected_face in detected_faces:
-                        closest_centroid_index, _ = find_closest_centroid(modules.globals.simple_map['target_embeddings'], detected_face.normed_embedding)
-                        temp_frame = swap_face(modules.globals.simple_map['source_faces'][closest_centroid_index], detected_face, temp_frame)
-                else:
-                    detected_faces_centroids = [face.normed_embedding for face in detected_faces]
-                    i = 0
-                    for target_embedding in modules.globals.simple_map['target_embeddings']:
-                        closest_centroid_index, _ = find_closest_centroid(detected_faces_centroids, target_embedding)
-                        # Ensure index is valid before accessing detected_faces
-                        if closest_centroid_index < len(detected_faces):
-                            temp_frame = swap_face(modules.globals.simple_map['source_faces'][i], detected_faces[closest_centroid_index], temp_frame)
-                        i += 1
     return temp_frame
 
 
