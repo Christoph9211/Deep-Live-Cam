@@ -95,58 +95,61 @@ def get_unique_faces_from_target_image() -> Any:
     
     
 def get_unique_faces_from_target_video() -> Any:
+    """Extract unique faces from the target video without keeping all frames in memory."""
     try:
         modules.globals.source_target_map = []
         frame_face_embeddings = []
         face_embeddings = []
-        frame_images = {}
 
-        cap = cv2.VideoCapture(modules.globals.target_path)
-        if not cap.isOpened():
-            return None
+        # Extract frames to a temporary directory
+        create_temp(modules.globals.target_path)
+        extract_frames(modules.globals.target_path)
+        frame_paths = sorted(get_temp_frame_paths(modules.globals.target_path))
 
-        i = 0
-        progress = tqdm(desc="Extracting face embeddings from frames")
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        progress = tqdm(frame_paths, desc="Extracting face embeddings from frames")
+        for i, frame_path in enumerate(progress):
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                continue
+
             many_faces = get_many_faces(frame)
 
             for face in many_faces:
                 face_embeddings.append(face.normed_embedding)
 
-            frame_images[i] = frame
-            frame_face_embeddings.append({'frame': i, 'faces': many_faces})
-            i += 1
-            progress.update(1)
+            frame_face_embeddings.append({'frame': i, 'faces': many_faces, 'location': frame_path})
 
         progress.close()
 
-        cap.release()
-
         centroids = find_cluster_centroids(face_embeddings)
+        del face_embeddings  # free memory
 
         for frame in frame_face_embeddings:
             for face in frame['faces']:
                 closest_centroid_index, _ = find_closest_centroid(centroids, face.normed_embedding)
                 face['target_centroid'] = closest_centroid_index
 
+        frame_paths_map = {idx: path for idx, path in enumerate(frame_paths)}
+
         for idx in range(len(centroids)):
             modules.globals.source_target_map.append({'id': idx})
 
             temp = []
             for frame in tqdm(frame_face_embeddings, desc=f"Mapping frame embeddings to centroids-{idx}"):
-                temp.append({'frame': frame['frame'], 'faces': [f for f in frame['faces'] if f['target_centroid'] == idx]})
+                filtered = [f for f in frame['faces'] if f['target_centroid'] == idx]
+                if filtered:
+                    temp.append({'frame': frame['frame'], 'location': frame['location'], 'faces': filtered})
 
             modules.globals.source_target_map[idx]['target_faces_in_frame'] = temp
 
-        default_target_face(frame_images)
+        default_target_face(frame_paths_map)
+        clean_temp(modules.globals.target_path)
     except ValueError:
         return None
     
 
 def default_target_face(frame_images: dict) -> None:
+    """Select a representative target face for each mapping."""
     for mapping in modules.globals.source_target_map:
         best_face = None
         best_frame_idx = None
@@ -164,9 +167,12 @@ def default_target_face(frame_images: dict) -> None:
 
         x_min, y_min, x_max, y_max = best_face['bbox']
 
-        target_frame = frame_images.get(best_frame_idx)
+        target_frame_path = frame_images.get(best_frame_idx)
+        target_cv2 = cv2.imread(target_frame_path)
+        if target_cv2 is None:
+            continue
         mapping['target'] = {
-            'cv2': target_frame[int(y_min):int(y_max), int(x_min):int(x_max)],
+            'cv2': target_cv2[int(y_min):int(y_max), int(x_min):int(x_max)],
             'face': best_face,
         }
 
