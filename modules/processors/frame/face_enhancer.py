@@ -115,7 +115,17 @@ def process_frame_v2(temp_frame: Frame) -> Frame:
     return temp_frame
 
 
-def process_frame_stream(frame: Frame) -> Frame:
-    """Process a frame stream by enhancing faces in the frame."""
+def process_frame_stream(source_path: str, frame: Frame) -> Frame:
+    """Process a frame stream by enhancing faces in the frame.
+
+    Parameters
+    ----------
+    source_path: str
+        Path to the source image or video. It is ignored here but kept for
+        compatibility with the processing pipeline.
+    frame: Frame
+        Frame to process.
+    """
+    # source_path is unused but kept for a unified API across frame processors
     return process_frame_v2(frame)
 
