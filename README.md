@@ -52,6 +52,9 @@ Users are expected to use this software responsibly and legally. If using a real
 
 **Optional open mouth still improves inner-mouth texture**
 
+You can now limit the mouth mask to specific time ranges using the `--mouth-mask-segments` option.
+The preview window also includes a field to enter these segments interactively.
+
 <p align="center">
   <img src="media/ludwig.gif" alt="resizable-gif">
 </p>
@@ -343,6 +346,7 @@ options:
   --many-faces                                             process every face
   --map-faces                                              map source target faces
   --mouth-mask                                             mask the mouth region
+  --mouth-mask-segments SEGMENTS                           time ranges for mouth mask, e.g. 0:5,10:15
   --video-encoder {libx264,libx265,libvpx-vp9}             adjust output video encoder
   --video-quality [0-51]                                   adjust output video quality
   --live-mirror                                            the live camera display as you see it in the front-facing camera frame

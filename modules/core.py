@@ -60,6 +60,7 @@ def parse_args() -> None:
     program.add_argument('--nsfw-filter', help='filter the NSFW image or video', dest='nsfw_filter', action='store_true', default=False)
     program.add_argument('--map-faces', help='map source target faces', dest='map_faces', action='store_true', default=False)
     program.add_argument('--mouth-mask', help='mask the mouth region', dest='mouth_mask', action='store_true', default=False)
+    program.add_argument('--mouth-mask-segments', help='time ranges for mouth mask in seconds e.g. 0:5,10:15', dest='mouth_mask_segments')
     program.add_argument('--video-encoder', help='adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
     program.add_argument('--video-quality', help='adjust output video quality', dest='video_quality', type=int, default=18, choices=range(52), metavar='[0-51]')
     program.add_argument('-l', '--lang', help='Ui language', default="en")
@@ -89,6 +90,19 @@ def parse_args() -> None:
     modules.globals.keep_frames = args.keep_frames
     modules.globals.many_faces = args.many_faces
     modules.globals.mouth_mask = args.mouth_mask
+    if args.mouth_mask_segments:
+        def _parse_segments(text: str):
+            segments = []
+            for part in text.split(','):
+                try:
+                    start, end = map(float, part.split(':'))
+                    segments.append((start, end))
+                except Exception:
+                    pass
+            return segments
+        modules.globals.mouth_mask_segments = _parse_segments(args.mouth_mask_segments)
+    else:
+        modules.globals.mouth_mask_segments = []
     modules.globals.nsfw_filter = args.nsfw_filter
     modules.globals.map_faces = args.map_faces
     modules.globals.video_encoder = args.video_encoder
@@ -201,6 +215,7 @@ def stream_video() -> None:
         update_status('Failed to open video file.')
         return
     fps = capture.get(cv2.CAP_PROP_FPS) if modules.globals.keep_fps else 30.0
+    modules.globals.fps = fps or 30.0
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
