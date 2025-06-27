@@ -79,6 +79,7 @@ source_label_dict_live = {}
 target_label_dict_live = {}
 mouth_mask_segments_var = None
 mouth_mask_segments_entry = None
+mouth_mask_var = None
 
 img_ft, vid_ft = modules.globals.file_types
 
@@ -324,6 +325,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
     show_fps_switch.place(relx=0.6, rely=0.75)
 
+    global mouth_mask_var
     mouth_mask_var = ctk.BooleanVar(value=modules.globals.mouth_mask)
     mouth_mask_switch = ctk.CTkSwitch(
         root,
@@ -855,6 +857,16 @@ def update_preview(frame_number: int = 0) -> None:
     if modules.globals.source_path and modules.globals.target_path:
         update_status("Processing...")
         temp_frame = get_video_frame(modules.globals.target_path, frame_number)
+        modules.globals.current_frame_idx = frame_number
+        if modules.globals.mouth_mask_segments and mouth_mask_var is not None:
+            fps = modules.globals.fps or 30.0
+            current_time = frame_number / fps
+            apply_mouth = any(
+                start <= current_time <= end
+                for start, end in modules.globals.mouth_mask_segments
+            )
+            modules.globals.mouth_mask = apply_mouth
+            mouth_mask_var.set(apply_mouth)
         if modules.globals.nsfw_filter and check_and_ignore_nsfw(temp_frame):
             return
         for frame_processor in get_frame_processors_modules(
@@ -981,6 +993,7 @@ def create_webcam_preview(camera_index: int):
     fps_update_interval = 0.5
     frame_count = 0
     fps = 0
+    frame_idx = 0
 
     while True:
         ret, frame = cap.read()
@@ -1001,6 +1014,18 @@ def create_webcam_preview(camera_index: int):
             temp_frame = fit_image_to_size(
                 temp_frame, PREVIEW.winfo_width(), PREVIEW.winfo_height()
             )
+
+        modules.globals.current_frame_idx = frame_idx
+        if modules.globals.mouth_mask_segments and mouth_mask_var is not None:
+            fps_val = modules.globals.fps or 30.0
+            current_time = frame_idx / fps_val
+            apply_mouth = any(
+                start <= current_time <= end
+                for start, end in modules.globals.mouth_mask_segments
+            )
+            modules.globals.mouth_mask = apply_mouth
+            mouth_mask_var.set(apply_mouth)
+        frame_idx += 1
 
         if not modules.globals.map_faces:
             if source_image is None and modules.globals.source_path:
