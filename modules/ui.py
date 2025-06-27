@@ -63,12 +63,14 @@ DEFAULT_BUTTON_HEIGHT = 40
 RECENT_DIRECTORY_SOURCE = None
 RECENT_DIRECTORY_TARGET = None
 RECENT_DIRECTORY_OUTPUT = None
+RECENT_DIRECTORY_OPEN_MOUTH = None
 
 _ = None
 preview_label = None
 preview_slider = None
 source_label = None
 target_label = None
+open_mouth_label = None
 status_label = None
 popup_status_label = None
 popup_status_label_live = None
@@ -135,7 +137,7 @@ def load_switch_states():
 
 
 def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
-    global source_label, target_label, status_label, show_fps_switch
+    global source_label, target_label, open_mouth_label, status_label, show_fps_switch
 
     load_switch_states()
 
@@ -157,6 +159,9 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     target_label = ctk.CTkLabel(root, text=None)
     target_label.place(relx=0.6, rely=0.1, relwidth=0.3, relheight=0.25)
 
+    open_mouth_label = ctk.CTkLabel(root, text=None)
+    open_mouth_label.place(relx=0.35, rely=0.1, relwidth=0.25, relheight=0.25)
+
     select_face_button = ctk.CTkButton(
         root, text=_("Select a face"), cursor="hand2", command=lambda: select_source_path()
     )
@@ -166,6 +171,18 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         root, text="↔", cursor="hand2", command=lambda: swap_faces_paths()
     )
     swap_faces_button.place(relx=0.45, rely=0.4, relwidth=0.1, relheight=0.1)
+
+    open_mouth_var = ctk.BooleanVar(
+        value=modules.globals.open_mouth_source_path is not None
+    )
+    open_mouth_switch = ctk.CTkSwitch(
+        root,
+        text=_("Open Mouth Still"),
+        variable=open_mouth_var,
+        cursor="hand2",
+        command=lambda: toggle_open_mouth_source(open_mouth_var),
+    )
+    open_mouth_switch.place(relx=0.35, rely=0.5)
 
     select_target_button = ctk.CTkButton(
         root,
@@ -598,6 +615,30 @@ def select_source_path() -> None:
     else:
         modules.globals.source_path = None
         source_label.configure(image=None)
+
+
+def toggle_open_mouth_source(var) -> None:
+    global RECENT_DIRECTORY_OPEN_MOUTH, img_ft
+
+    if var.get():
+        PREVIEW.withdraw()
+        path = ctk.filedialog.askopenfilename(
+            title=_("select an open mouth source image"),
+            initialdir=RECENT_DIRECTORY_OPEN_MOUTH or RECENT_DIRECTORY_SOURCE,
+            filetypes=[img_ft],
+        )
+        if is_image(path):
+            modules.globals.open_mouth_source_path = path
+            RECENT_DIRECTORY_OPEN_MOUTH = os.path.dirname(path)
+            image = render_image_preview(path, (200, 200))
+            open_mouth_label.configure(image=image)
+        else:
+            modules.globals.open_mouth_source_path = None
+            var.set(False)
+            open_mouth_label.configure(image=None)
+    else:
+        modules.globals.open_mouth_source_path = None
+        open_mouth_label.configure(image=None)
 
 
 def swap_faces_paths() -> None:
