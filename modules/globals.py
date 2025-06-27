@@ -13,6 +13,7 @@ source_target_map = []
 simple_map = {}
 
 source_path = None
+open_mouth_source_path = None
 target_path = None
 output_path = None
 frame_processors: List[str] = []

@@ -49,6 +49,7 @@ def parse_args() -> None:
     signal.signal(signal.SIGINT, lambda signal_number, frame: destroy())
     program = argparse.ArgumentParser()
     program.add_argument('-s', '--source', help='select an source image', dest='source_path')
+    program.add_argument('--open-mouth-source', help='optional open mouth source image', dest='open_mouth_source_path')
     program.add_argument('-t', '--target', help='select an target image or video', dest='target_path')
     program.add_argument('-o', '--output', help='select output file or directory', dest='output_path')
     program.add_argument('--frame-processor', help='pipeline of frame processors', dest='frame_processor', default=['face_swapper'], choices=['face_swapper', 'face_enhancer'], nargs='+')
@@ -78,6 +79,7 @@ def parse_args() -> None:
     args = program.parse_args()
 
     modules.globals.source_path = args.source_path
+    modules.globals.open_mouth_source_path = args.open_mouth_source_path
     modules.globals.target_path = args.target_path
     modules.globals.output_path = normalize_output_path(modules.globals.source_path, modules.globals.target_path, args.output_path)
     modules.globals.frame_processors = args.frame_processor
