@@ -50,6 +50,8 @@ Users are expected to use this software responsibly and legally. If using a real
 
 **Retain your original mouth for accurate movement using Mouth Mask**
 
+**Optional open mouth still improves inner-mouth texture**
+
 <p align="center">
   <img src="media/ludwig.gif" alt="resizable-gif">
 </p>
@@ -323,6 +325,7 @@ Visit our [official blog](https://deeplivecam.net/index.php/blog/tips-and-tricks
 options:
   -h, --help                                               show this help message and exit
   -s SOURCE_PATH, --source SOURCE_PATH                     select a source image
+  --open-mouth-source OPEN_MOUTH_SOURCE_PATH              optional open mouth source image
   -t TARGET_PATH, --target TARGET_PATH                     select a target image or video
   -o OUTPUT_PATH, --output OUTPUT_PATH                     select output file or directory
   --frame-processor FRAME_PROCESSOR [FRAME_PROCESSOR ...]  frame processors (choices: face_swapper, face_enhancer, ...)

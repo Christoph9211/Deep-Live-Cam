@@ -22,6 +22,26 @@ NAME = 'DLC.FACE-SWAPPER'
 
 from typing import Tuple
 
+
+def get_combined_source_face(source_path: str) -> Face | None:
+    """Load the source face and optionally merge with an open-mouth still."""
+    source_img = cv2.imread(source_path)
+    if source_img is None:
+        return None
+    source_face = get_one_face(source_img)
+    open_path = modules.globals.open_mouth_source_path
+    if source_face is not None and open_path and is_image(open_path):
+        open_img = cv2.imread(open_path)
+        if open_img is not None:
+            open_face = get_one_face(open_img)
+            if open_face is not None and hasattr(source_face, "embedding") and hasattr(open_face, "embedding"):
+                combined = source_face.embedding + open_face.embedding
+                norm = np.linalg.norm(combined)
+                if norm != 0:
+                    combined = combined / norm
+                source_face.embedding = combined
+    return source_face
+
 def create_lower_mouth_mask(
     face: Face, frame: Frame # type: ignore
 ) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
@@ -290,7 +310,7 @@ def pre_start() -> bool:
     if not modules.globals.map_faces and not is_image(modules.globals.source_path):
         update_status('Select an image for source path.', NAME)
         return False
-    elif not modules.globals.map_faces and not get_one_face(cv2.imread(modules.globals.source_path)):
+    elif not modules.globals.map_faces and get_combined_source_face(modules.globals.source_path) is None:
         update_status('No face in source path detected.', NAME)
         return False
     if not is_image(modules.globals.target_path) and not is_video(modules.globals.target_path):
@@ -481,9 +501,7 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
     # Note: Ensure get_one_face is called only once if possible for efficiency if !map_faces
     source_face = None
     if not modules.globals.map_faces:
-        source_img = cv2.imread(source_path)
-        if source_img is not None:
-            source_face = get_one_face(source_img)
+        source_face = get_combined_source_face(source_path)
         if source_face is None:
              update_status(f"Could not find face in source image: {source_path}, skipping swap.", NAME)
              # If no source face, maybe skip processing? Or handle differently.
@@ -524,11 +542,7 @@ def process_image(source_path: str, target_path: str, output_path: str) -> None:
         return
 
     if not modules.globals.map_faces:
-        source_img = cv2.imread(source_path)
-        if source_img is None:
-             update_status(f"Error: Could not read source image: {source_path}", NAME)
-             return
-        source_face = get_one_face(source_img)
+        source_face = get_combined_source_face(source_path)
         if source_face is None:
             update_status(f"Error: No face found in source image: {source_path}", NAME)
             return
@@ -563,9 +577,7 @@ def process_frame_stream(source_path: str, frame: Frame) -> Frame:
     global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
     if not modules.globals.map_faces:
         if STREAM_SOURCE_FACE is None:
-            source_img = cv2.imread(source_path)
-            if source_img is not None:
-                STREAM_SOURCE_FACE = get_one_face(source_img)
+            STREAM_SOURCE_FACE = get_combined_source_face(source_path)
         if STREAM_SOURCE_FACE is not None:
             return process_frame(STREAM_SOURCE_FACE, frame)
         return frame
