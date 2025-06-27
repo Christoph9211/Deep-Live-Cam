@@ -528,7 +528,11 @@ def draw_mouth_mask_visualization(
         feathered_mask = cv2.GaussianBlur(
             mask_region.astype(float), (kernel_size, kernel_size), 0
         )
-        feathered_mask = (feathered_mask / feathered_mask.max() * 255).astype(np.uint8)
+        max_val = feathered_mask.max()
+        if max_val > 0:
+            feathered_mask = (feathered_mask / max_val * 255).astype(np.uint8)
+        else:
+            feathered_mask = np.zeros_like(feathered_mask, dtype=np.uint8)
         # Remove the feathered mask color overlay
         # color_feathered_mask = cv2.applyColorMap(feathered_mask, cv2.COLORMAP_VIRIDIS)
 
@@ -712,8 +716,13 @@ def apply_color_transfer(source, target):
     target_mean = target_mean.reshape(1, 1, 3)
     target_std = target_std.reshape(1, 1, 3)
 
-    source = (source - source_mean) * (target_std / source_std) + target_mean
+    # Avoid division by zero by adding epsilon
+    epsilon = 1e-6
+    safe_source_std = np.where(source_std < epsilon, epsilon, source_std)
+    source = (source - source_mean) * (target_std / safe_source_std) + target_mean
 
+    # Remove NaNs/Infs before casting
+    source = np.nan_to_num(source, nan=0.0, posinf=255.0, neginf=0.0)
     return cv2.cvtColor(np.clip(source, 0, 255).astype("uint8"), cv2.COLOR_LAB2BGR)
 
 
