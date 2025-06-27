@@ -107,6 +107,7 @@ def save_switch_states():
         "show_fps": modules.globals.show_fps,
         "mouth_mask": modules.globals.mouth_mask,
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
+        "foreground_protection": modules.globals.foreground_protection,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -130,6 +131,9 @@ def load_switch_states():
         modules.globals.mouth_mask = switch_states.get("mouth_mask", False)
         modules.globals.show_mouth_mask_box = switch_states.get(
             "show_mouth_mask_box", False
+        )
+        modules.globals.foreground_protection = switch_states.get(
+            "foreground_protection", False
         )
     except FileNotFoundError:
         # If the file doesn't exist, use default values
@@ -324,6 +328,23 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         ),
     )
     show_mouth_mask_box_switch.place(relx=0.6, rely=0.55)
+
+    foreground_protection_var = ctk.BooleanVar(value=modules.globals.foreground_protection)
+    foreground_protection_switch = ctk.CTkSwitch(
+        root,
+        text=_("Foreground Protection"),
+        variable=foreground_protection_var,
+        cursor="hand2",
+        command=lambda: (
+            setattr(
+                modules.globals,
+                "foreground_protection",
+                foreground_protection_var.get(),
+            ),
+            save_switch_states(),
+        ),
+    )
+    foreground_protection_switch.place(relx=0.1, rely=0.50)
 
     start_button = ctk.CTkButton(
         root, text=_("Start"), cursor="hand2", command=lambda: analyze_target(start, root)

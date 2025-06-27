@@ -39,6 +39,7 @@ webcam_preview_running = False
 show_fps = False
 mouth_mask = False
 show_mouth_mask_box = False
+foreground_protection = False
 mask_feather_ratio = 8
 mask_down_size = 0.25
 mask_size = 1.0

@@ -56,6 +56,14 @@ Users are expected to use this software responsibly and legally. If using a real
   <img src="media/ludwig.gif" alt="resizable-gif">
 </p>
 
+### Foreground Protection
+
+**Keep objects in front of the face intact while swapping only what's behind**
+
+<p align="center">
+  <img src="media/demo.gif" alt="foreground-protection">
+</p>
+
 ### Face Mapping
 
 **Use different faces on multiple subjects simultaneously**
