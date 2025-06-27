@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import insightface
 import threading
+import mediapipe as mp
 
 import modules.globals
 import modules.processors.frame.core
@@ -18,6 +19,8 @@ from modules.cluster_analysis import find_closest_centroid
 FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
+
+SEGMENTER = None
 
 
 from typing import Tuple
@@ -276,6 +279,20 @@ def create_face_mask(face: Face, frame: Frame) -> np.ndarray: # type: ignore
     return mask
 
 
+def get_foreground_mask(frame: Frame) -> np.ndarray:
+    """Return a binary mask for prominent foreground objects."""
+    global SEGMENTER
+    if SEGMENTER is None:
+        SEGMENTER = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+
+    results = SEGMENTER.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    if results.segmentation_mask is None:
+        return np.zeros(frame.shape[:2], dtype=np.uint8)
+
+    mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
+    return mask
+
+
 def apply_color_transfer(source, target):
     source = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype("float32")
     target = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype("float32")
@@ -379,6 +396,16 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
             swapped_frame = draw_mouth_mask_visualization(
                 swapped_frame, target_face, mouth_mask_data
             )
+
+    if modules.globals.foreground_protection:
+        # Protect non-face foreground elements using a segmentation mask
+        fg_mask = get_foreground_mask(temp_frame)
+        face_mask = create_face_mask(target_face, temp_frame)
+        occlusion_mask = cv2.bitwise_and(fg_mask, cv2.bitwise_not(face_mask))
+        occlusion_mask_3c = cv2.merge([occlusion_mask] * 3) / 255.0
+        swapped_frame = (
+            swapped_frame * (1 - occlusion_mask_3c) + temp_frame * occlusion_mask_3c
+        ).astype(np.uint8)
 
     return swapped_frame
 
