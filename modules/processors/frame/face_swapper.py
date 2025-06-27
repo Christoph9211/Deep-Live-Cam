@@ -26,7 +26,9 @@ SEGMENTER = None
 from typing import Tuple
 
 
-def get_combined_source_face(source_path: str) -> Face | None:
+from typing import Optional
+
+def get_combined_source_face(source_path: str) -> Optional[Face]: # type: ignore
     """Load the source face and optionally merge with an open-mouth still."""
     source_img = cv2.imread(source_path)
     if source_img is None:
@@ -48,23 +50,28 @@ def get_combined_source_face(source_path: str) -> Face | None:
 def create_lower_mouth_mask(
     face: Face, frame: Frame # type: ignore
 ) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
-    """Create a mask tightly around the mouth area (no chin extension).
+    """Create a mask tightly around the mouth area, now including the entire upper lip."""
 
-    This version uses only the convex hull of the outer lip landmarks
-    with no padding, so the mask does not extend past the mouth.
-    """
-
+    # Create a zero-filled mask with the same height and width as the frame
     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    # Initialize the mouth cutout, which will be populated if the face has landmarks
     mouth_cutout = None
+    # Get the 106-point landmark array from the face
     landmarks = face.landmark_2d_106
 
     if landmarks is not None:
-        # Outer lip indices for 106-point model
+        # Expanded mouth indices: outer lip + upper lip (for 106-point model)
         mouth_indices = [
-            65, 66, 62, 70, 69, 18, 19, 20, 21, 22, 23, 24, 0, 8, 7, 6, 5, 4, 3, 2
+            65, 66, 62, 70, 69, 18, 19, 20, 21, 22, 23, 24, 0, 8, 7, 6, 5, 4, 3, 2, # outer lip
+            60, 61, 63, 64, 71, 72, 73, 74, 75  # above upper lip
         ]
+        # Optionally add more indices for even fuller coverage if needed
+        # upper_lip_indices = [76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99]
+        # mouth_points = np.concatenate([landmarks[mouth_indices], landmarks[upper_lip_indices]]).astype(np.int32)
         mouth_points = landmarks[mouth_indices].astype(np.int32)
+        # Compute the convex hull of the mouth points
         hull = cv2.convexHull(mouth_points)
+        # Get the bounding box of the convex hull
         x, y, w, h = cv2.boundingRect(hull)
 
         # Clip coordinates to ensure we do not index outside of the frame
@@ -76,8 +83,11 @@ def create_lower_mouth_mask(
         clip_max_x = min(max_x, frame_width)
         clip_max_y = min(max_y, frame_height)
 
+        # Create a zero-filled mask ROI with the same shape as the bounding box
         mask_roi_full = np.zeros((h, w), dtype=np.uint8)
+        # Shift the convex hull so that the origin is at the top-left of the bounding box
         shifted_hull = hull - [x, y]
+        # Fill the convex hull in the mask ROI with white (255)
         cv2.fillConvexPoly(mask_roi_full, shifted_hull, 255)
 
         # Optional: very slight blur for feathering, but not enough to extend past mouth
@@ -86,73 +96,121 @@ def create_lower_mouth_mask(
         # Crop ROI if clipping occurred
         mask_roi = mask_roi_full[clip_min_y - y : clip_max_y - y, clip_min_x - x : clip_max_x - x]
 
+        # Copy the mask ROI into the output mask
         mask[clip_min_y:clip_max_y, clip_min_x:clip_max_x] = mask_roi
 
+        # Extract the mouth cutout from the original frame
         mouth_cutout = frame[clip_min_y:clip_max_y, clip_min_x:clip_max_x].copy()
+        # Save the lower lip polygon (the convex hull of the mouth points)
         lower_lip_polygon = hull
+        # Return the mask, mouth cutout, bounding box coordinates, and lower lip polygon
         return mask, mouth_cutout, (clip_min_x, clip_min_y, clip_max_x, clip_max_y), lower_lip_polygon
 
+    # If the face does not have landmarks, return an empty mask and None for the mouth cutout
     return mask, mouth_cutout, (0, 0, 0, 0), None
 
 
 def draw_mouth_mask_visualization(
     frame: Frame, face: Face, mouth_mask_data: tuple # type: ignore
 ) -> Frame:
-    landmarks = face.landmark_2d_106
-    if landmarks is not None and mouth_mask_data is not None:
-        mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon = (
-            mouth_mask_data
-        )
+    """Visualize the expanded mouth mask and the lower lip polygon.
 
+    This function takes a frame and a face as input and returns a new frame with
+    visualizations of the expanded mouth mask and the lower lip polygon.
+
+    Args:
+        frame: The original frame.
+        face: The face object containing the landmarks.
+        mouth_mask_data: A tuple containing the mouth mask, the mouth cutout, the
+            bounding box coordinates, and the lower lip polygon.
+
+    Returns:
+        A new frame with visualizations of the expanded mouth mask and the lower
+            lip polygon.
+    """
+
+    # Get the landmarks from the face object
+    landmarks = face.landmark_2d_106
+
+    # If the landmarks are not None, proceed with visualization
+    if landmarks is not None and mouth_mask_data is not None:
+        # Unpack the mouth mask data tuple
+        mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon = mouth_mask_data
+
+        # Create a copy of the original frame for visualization
         vis_frame = frame.copy()
 
-        # Ensure coordinates are within frame bounds
+        # Get the height and width of the frame
         height, width = vis_frame.shape[:2]
+
+        # Clip the coordinates to ensure they do not exceed the frame boundaries
         min_x, min_y = max(0, min_x), max(0, min_y)
         max_x, max_y = min(width, max_x), min(height, max_y)
 
-        # Adjust mask to match the region size
-        mask_region = mask[0 : max_y - min_y, 0 : max_x - min_x]
+        # --- Expanded region: include chin, lower cheeks, and more of the upper lip ---
 
-        # vis_region = vis_frame[min_y:max_y, min_x:max_x]
+        # Define the indices for the expanded mouth region
+        # These indices include the chin, lower cheek area, and more of the upper lip
+        chin_indices = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 0, 1, 2, 3]
+        mouth_indices = [
+            65, 66, 62, 70, 69, 18, 19, 20, 21, 22, 23, 24, 0, 8, 7, 6, 5, 4, 3, 2,
+            60, 61, 63, 64, 71, 72, 73, 74, 75  # points above upper lip (adjust as needed)
+        ]
+        upper_lip_indices = [76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99]
 
-        # Draw the lower lip polygon
+        # Concatenate the expanded points
+        expanded_points = np.concatenate([
+            landmarks[mouth_indices],
+            landmarks[chin_indices][::-1],
+            landmarks[upper_lip_indices][::-1]
+        ]).astype(np.int32)
+
+        # Compute the convex hull of the expanded points
+        expanded_hull = cv2.convexHull(expanded_points)
+
+        # Draw the expanded hull as a yellow polygon
+        cv2.polylines(vis_frame, [expanded_hull], True, (0, 128, 255), 2)
+
+        # Draw the lower lip polygon as a green polygon
         cv2.polylines(vis_frame, [lower_lip_polygon], True, (0, 255, 0), 2)
 
+        # Draw a filled expanded mask (semi-transparent overlay)
+        overlay = vis_frame.copy()
+        cv2.fillConvexPoly(overlay, expanded_hull, (0, 128, 255))
+        alpha = 0.25
+        vis_frame = cv2.addWeighted(overlay, alpha, vis_frame, 1 - alpha, 0)
+
+        # Feathered mask for the expanded region
+        mask_region = np.zeros((max_y - min_y, max_x - min_x), dtype=np.uint8)
+        shifted_hull = expanded_hull - [min_x, min_y]
+        cv2.fillConvexPoly(mask_region, shifted_hull, 255)
         feather_amount = max(
-            1,
-            min(
-                30,
-                (max_x - min_x) // modules.globals.mask_feather_ratio,
-                (max_y - min_y) // modules.globals.mask_feather_ratio,
-            ),
+            5,
+            min(40, (max_x - min_x) // 8, (max_y - min_y) // 8),
         )
         kernel_size = 2 * feather_amount + 1
-        feathered_mask = cv2.GaussianBlur(
-            mask_region.astype(float), (kernel_size, kernel_size), 0
-        )
+        feathered_mask = cv2.GaussianBlur(mask_region.astype(float), (kernel_size, kernel_size), 0)
         feathered_mask = (feathered_mask / feathered_mask.max() * 255).astype(np.uint8)
+        # Overlay feathered mask as heatmap
+        color_mask = cv2.applyColorMap(feathered_mask, cv2.COLORMAP_JET)
+        mask_area = vis_frame[min_y:max_y, min_x:max_x]
+        vis_frame[min_y:max_y, min_x:max_x] = cv2.addWeighted(mask_area, 0.7, color_mask, 0.3, 0)
 
+        # Add a text label to the visualization
         cv2.putText(
             vis_frame,
-            "Lower Mouth Mask",
+            "Expanded Mouth/Chin Mask",
             (min_x, min_y - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (255, 255, 255),
             1,
         )
-        cv2.putText(
-            vis_frame,
-            "Feathered Mask",
-            (min_x, max_y + 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-        )
 
+        # Return the visualization
         return vis_frame
+
+    # If the landmarks are None, return the original frame
     return frame
 
 
