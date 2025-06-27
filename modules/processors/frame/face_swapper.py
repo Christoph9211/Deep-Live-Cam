@@ -1,5 +1,6 @@
 import os  # <-- Added for os.path.exists
 from typing import Any, List
+from pathlib import Path
 import cv2
 import numpy as np
 import insightface
@@ -787,7 +788,13 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
 
     swapped_frame = swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
-    if modules.globals.mouth_mask:
+    apply_mouth = modules.globals.mouth_mask
+    if modules.globals.mouth_mask_segments:
+        fps = modules.globals.fps or 30.0
+        current_time = modules.globals.current_frame_idx / fps
+        apply_mouth = any(start <= current_time <= end for start, end in modules.globals.mouth_mask_segments)
+
+    if apply_mouth:
         face_mask = create_face_mask(target_face, temp_frame)
         mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(
             target_face, temp_frame
@@ -850,6 +857,13 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
     that each source/target pair is honoured even if ``many_faces`` is also
     active.
     """
+    try:
+        if isinstance(frame_id, str):
+            modules.globals.current_frame_idx = int(Path(frame_id).stem)
+        else:
+            modules.globals.current_frame_idx = int(frame_id)
+    except Exception:
+        pass
 
     # process image targets -------------------------------------------------
     if is_image(modules.globals.target_path):
@@ -948,6 +962,11 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
             continue # Skip to next frame
 
         try:
+            modules.globals.current_frame_idx = int(Path(temp_frame_path).stem)
+        except Exception:
+            pass
+
+        try:
             if not modules.globals.map_faces:
                 if source_face: # Only process if source face was found
                     result = process_frame(source_face, temp_frame)
@@ -1012,9 +1031,12 @@ def process_frame_stream(source_path: str, frame: Frame) -> Frame:
         if STREAM_SOURCE_FACE is None:
             STREAM_SOURCE_FACE = get_combined_source_face(source_path)
         if STREAM_SOURCE_FACE is not None:
+            modules.globals.current_frame_idx = STREAM_FRAME_IDX
+            STREAM_FRAME_IDX += 1
             return process_frame(STREAM_SOURCE_FACE, frame)
         return frame
     else:
+        modules.globals.current_frame_idx = STREAM_FRAME_IDX
         processed = process_frame_v2(frame, STREAM_FRAME_IDX)
         STREAM_FRAME_IDX += 1
         return processed

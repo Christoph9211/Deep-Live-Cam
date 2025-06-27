@@ -77,6 +77,8 @@ popup_status_label_live = None
 source_label_dict = {}
 source_label_dict_live = {}
 target_label_dict_live = {}
+mouth_mask_segments_var = None
+mouth_mask_segments_entry = None
 
 img_ft, vid_ft = modules.globals.file_types
 
@@ -138,6 +140,21 @@ def load_switch_states():
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
+
+
+def _parse_segments(text: str):
+    segments = []
+    for part in text.split(','):
+        try:
+            start, end = map(float, part.split(':'))
+            segments.append((start, end))
+        except Exception:
+            pass
+    return segments
+
+
+def _segments_to_str(segments):
+    return ','.join(f"{start}:{end}" for start, end in segments)
 
 
 def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
@@ -316,6 +333,17 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         command=lambda: setattr(modules.globals, "mouth_mask", mouth_mask_var.get()),
     )
     mouth_mask_switch.place(relx=0.1, rely=0.55)
+
+    global mouth_mask_segments_var, mouth_mask_segments_entry
+    mouth_mask_segments_var = ctk.StringVar(
+        value=_segments_to_str(modules.globals.mouth_mask_segments)
+    )
+    mouth_mask_segments_entry = ctk.CTkEntry(
+        root,
+        textvariable=mouth_mask_segments_var,
+        placeholder_text="0:5,10:15",
+    )
+    mouth_mask_segments_entry.place(relx=0.35, rely=0.55, relwidth=0.25, relheight=0.05)
 
     show_mouth_mask_box_var = ctk.BooleanVar(value=modules.globals.show_mouth_mask_box)
     show_mouth_mask_box_switch = ctk.CTkSwitch(
@@ -805,6 +833,10 @@ def toggle_preview() -> None:
     if PREVIEW.state() == "normal":
         PREVIEW.withdraw()
     elif modules.globals.source_path and modules.globals.target_path:
+        if mouth_mask_segments_var is not None:
+            modules.globals.mouth_mask_segments = _parse_segments(
+                mouth_mask_segments_var.get()
+            )
         init_preview()
         update_preview()
 
