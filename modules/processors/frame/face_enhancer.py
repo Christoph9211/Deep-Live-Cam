@@ -74,7 +74,7 @@ def enhance_face(temp_frame: Frame) -> Frame:
     return temp_frame
 
 
-def process_frame(source_face: Optional[Face], temp_frame: Frame) -> Frame:
+def process_frame(source_face: Optional[Face], temp_frame: Frame) -> Frame: # type: ignore
     """Enhance the face present in ``temp_frame``.
 
     ``source_face`` is accepted for API compatibility but ignored since this
