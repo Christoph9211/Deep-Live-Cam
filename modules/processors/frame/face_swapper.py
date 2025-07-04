@@ -691,7 +691,7 @@ def create_face_mask(face: Face, frame: Frame) -> np.ndarray: # type: ignore
 
 
 def get_foreground_mask(frame: Frame) -> np.ndarray:
-    """Return a binary mask for prominent foreground objects."""
+    """Return a binary mask for prominent foreground objects with improved sensitivity."""
     global SEGMENTER
     if SEGMENTER is None:
         SEGMENTER = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
@@ -700,7 +700,8 @@ def get_foreground_mask(frame: Frame) -> np.ndarray:
     if results.segmentation_mask is None:
         return np.zeros(frame.shape[:2], dtype=np.uint8)
 
-    mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
+    # Increase sensitivity by adjusting the threshold
+    mask = (results.segmentation_mask > 0.3).astype(np.uint8) * 255
     return mask
 
 
@@ -1029,23 +1030,57 @@ def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
     # The core processing logic is delegated, which is good.
     modules.processors.frame.core.process_video(source_path, temp_frame_paths, process_frames)
 
-
-STREAM_SOURCE_FACE = None
-STREAM_FRAME_IDX = 0
-
-
 def process_frame_stream(source_path: str, frame: Frame) -> Frame:
-    global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
+    """
+    Enhance faces in a live frame stream.
+
+    Function-static storage is used to avoid using global variables.
+    """
+    # Function-static storage to avoid globals
+    if not hasattr(process_frame_stream, "cache"):
+        process_frame_stream.cache = {
+            "source_face": None,  # The source face for non-mapped processing
+            "frame_idx": 0,  # The current frame index
+        }
+
+    cache = process_frame_stream.cache
+
     if not modules.globals.map_faces:
-        if STREAM_SOURCE_FACE is None:
-            STREAM_SOURCE_FACE = get_combined_source_face(source_path)
-        if STREAM_SOURCE_FACE is not None:
-            modules.globals.current_frame_idx = STREAM_FRAME_IDX
-            STREAM_FRAME_IDX += 1
-            return process_frame(STREAM_SOURCE_FACE, frame)
+        # If not mapping faces, use the first source face found
+        if cache["source_face"] is None:
+            img = cv2.imread(source_path)
+            if img is not None:
+                cache["source_face"] = get_one_face(img)
+
+        if cache["source_face"] is not None:
+            # Process the frame using the source face
+            return process_frame(cache["source_face"], frame)
+        # If no source face, return the original frame
         return frame
     else:
-        modules.globals.current_frame_idx = STREAM_FRAME_IDX
-        processed = process_frame_v2(frame, STREAM_FRAME_IDX)
-        STREAM_FRAME_IDX += 1
+        # Process the frame using the frame index
+        processed = process_frame_v2(frame, cache["frame_idx"])
+        # Increment the frame index for the next iteration
+        cache["frame_idx"] += 1
         return processed
+
+
+# STREAM_SOURCE_FACE = None
+# STREAM_FRAME_IDX = 0
+
+
+# def process_frame_stream(source_path: str, frame: Frame) -> Frame:
+#     global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
+#     if not modules.globals.map_faces:
+#         if STREAM_SOURCE_FACE is None:
+#             STREAM_SOURCE_FACE = get_combined_source_face(source_path)
+#         if STREAM_SOURCE_FACE is not None:
+#             modules.globals.current_frame_idx = STREAM_FRAME_IDX
+#             STREAM_FRAME_IDX += 1
+#             return process_frame(STREAM_SOURCE_FACE, frame)
+#         return frame
+#     else:
+#         modules.globals.current_frame_idx = STREAM_FRAME_IDX
+#         processed = process_frame_v2(frame, STREAM_FRAME_IDX)
+#         STREAM_FRAME_IDX += 1
+#         return processed
