@@ -975,12 +975,13 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
              # If no source face, maybe skip processing? Or handle differently.
              # For now, it will proceed but swap_face might fail later.
 
-    for temp_frame_path in temp_frame_paths:
+    for frame_idx, temp_frame_path in enumerate(temp_frame_paths):
         temp_frame = cv2.imread(temp_frame_path)
         if temp_frame is None:
             update_status(f"Warning: Could not read frame {temp_frame_path}", NAME)
-            if progress: progress.update(1) # Still update progress even if frame fails
-            continue # Skip to next frame
+            if progress:
+                progress.update(1)  # Still update progress even if frame fails
+            continue  # Skip to next frame
 
         try:
             modules.globals.current_frame_idx = int(Path(temp_frame_path).stem)
@@ -989,12 +990,12 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
 
         try:
             if not modules.globals.map_faces:
-                if source_face: # Only process if source face was found
+                if source_face:  # Only process if source face was found
                     result = process_frame(source_face, temp_frame)
                 else:
-                    result = temp_frame # No source face, return original frame
+                    result = temp_frame  # No source face, return original frame
             else:
-                 result = process_frame_v2(temp_frame, temp_frame_path)
+                result = process_frame_v2(temp_frame, frame_idx)
 
             cv2.imwrite(temp_frame_path, result)
         except Exception as exception:
