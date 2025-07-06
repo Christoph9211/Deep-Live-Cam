@@ -741,6 +741,17 @@ def pre_start() -> bool:
     global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
     STREAM_SOURCE_FACE = None
     STREAM_FRAME_IDX = 0
+    # Reset function-static cache used by ``process_frame_stream`` so that
+    # frame indexes start from ``0`` for each new run. Without this the
+    # index could carry over from a previous preview or run which results
+    # in mismatched frame ids when mapping faces. This caused the mapped
+    # faces logic to never find a matching frame and therefore no faces
+    # were swapped in the final output.
+    if hasattr(process_frame_stream, "cache"):
+        process_frame_stream.cache = {
+            "source_face": None,
+            "frame_idx": 0,
+        }
     if not modules.globals.map_faces and not is_image(modules.globals.source_path):
         update_status('Select an image for source path.', NAME)
         return False
