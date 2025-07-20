@@ -844,6 +844,124 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     return swapped_frame
 
 
+def swap_face_stable(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:  # type: ignore
+    """Ultra fast swap prioritising raw FPS."""
+    swapper = get_face_swapper()
+    if swapper is None:
+        return temp_frame
+    return swapper.get(temp_frame, target_face, source_face, paste_back=True)
+
+
+def fix_forehead_hair_issue(swapped_frame: Frame, target_face: Face, original_frame: Frame) -> Frame:  # type: ignore
+    """Blend the forehead from the original frame back to reduce hair artifacts."""
+    try:
+        bbox = target_face.bbox.astype(int)
+        x1, y1, x2, y2 = bbox
+        h, w = swapped_frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return swapped_frame
+
+        forehead_height = int((y2 - y1) * 0.35)
+        forehead_y2 = y1 + forehead_height
+        if forehead_y2 > y1:
+            swapped_forehead = swapped_frame[y1:forehead_y2, x1:x2]
+            original_forehead = original_frame[y1:forehead_y2, x1:x2]
+            mask = np.ones(swapped_forehead.shape[:2], dtype=np.float32)
+            mask = cv2.GaussianBlur(mask, (31, 31), 10)
+            mask = mask[:, :, np.newaxis]
+            blended = (swapped_forehead * 0.3 + original_forehead * 0.7).astype(np.uint8)
+            swapped_frame[y1:forehead_y2, x1:x2] = blended
+    except Exception:
+        pass
+    return swapped_frame
+
+
+def swap_face_ultra_fast(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:  # type: ignore
+    """Swap with additional forehead protection and mouth masking."""
+    swapper = get_face_swapper()
+    if swapper is None:
+        return temp_frame
+
+    swapped_frame = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    swapped_frame = fix_forehead_hair_issue(swapped_frame, target_face, temp_frame)
+    swapped_frame = improve_forehead_matching(swapped_frame, source_face, target_face, temp_frame)
+
+    if modules.globals.mouth_mask:
+        face_mask = create_face_mask(target_face, temp_frame)
+        mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(target_face, temp_frame)
+        swapped_frame = apply_mouth_area(
+            swapped_frame,
+            mouth_cutout,
+            mouth_box,
+            face_mask,
+            lower_lip_polygon,
+        )
+
+        if modules.globals.show_mouth_mask_box:
+            mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
+            swapped_frame = draw_mouth_mask_visualization(swapped_frame, target_face, mouth_mask_data)
+
+    return swapped_frame
+
+
+def create_precise_face_mask(landmarks: np.ndarray, frame_shape: tuple) -> np.ndarray:
+    """Create a mask excluding forehead and hair for refined blending."""
+    try:
+        mask = np.zeros(frame_shape, dtype=np.uint8)
+
+        jaw_line = landmarks[0:33]
+        left_eye_area = landmarks[33:42]
+        right_eye_area = landmarks[87:96]
+        left_eyebrow = landmarks[43:51]
+        right_eyebrow = landmarks[97:105]
+
+        face_contour_points = []
+        face_contour_points.extend(left_eyebrow)
+        face_contour_points.extend(right_eyebrow)
+        face_contour_points.extend(jaw_line)
+        face_contour_points = np.array(face_contour_points)
+
+        hull = cv2.convexHull(face_contour_points)
+        cv2.fillConvexPoly(mask, hull, 255)
+        mask = cv2.GaussianBlur(mask, (21, 21), 7)
+        return mask
+    except Exception:
+        return None
+
+
+def improve_forehead_matching(swapped_frame: Frame, source_face: Face, target_face: Face, original_frame: Frame) -> Frame:  # type: ignore
+    """Optionally blend only core facial features back to the original frame."""
+    try:
+        if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None:
+            landmarks = target_face.landmark_2d_106.astype(np.int32)
+            mask = create_precise_face_mask(landmarks, swapped_frame.shape[:2])
+            if mask is not None:
+                mask_3d = mask[:, :, np.newaxis] / 255.0
+                return (swapped_frame * mask_3d + original_frame * (1 - mask_3d)).astype(np.uint8)
+
+        bbox = target_face.bbox.astype(int)
+        x1, y1, x2, y2 = bbox
+        h, w = swapped_frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return swapped_frame
+
+        forehead_height = int((y2 - y1) * 0.25)
+        face_start_y = y1 + forehead_height
+        if face_start_y < y2:
+            swapped_area = swapped_frame[face_start_y:y2, x1:x2]
+            original_area = original_frame[face_start_y:y2, x1:x2]
+            mask = np.ones(swapped_area.shape[:2], dtype=np.float32)
+            mask = cv2.GaussianBlur(mask, (15, 15), 5)
+            mask = mask[:, :, np.newaxis]
+            swapped_frame[face_start_y:y2, x1:x2] = swapped_area * 0.5 + original_area * 0.5
+        return swapped_frame
+    except Exception:
+        return swapped_frame
+
 def process_frame(source_face: Face, temp_frame: Frame) -> Frame:  # type: ignore
     # --- No changes needed in process_frame ---
     # Ensure the frame is in RGB format if color correction is enabled
@@ -858,11 +976,11 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:  # type: ignor
         many_faces = get_many_faces(temp_frame)
         if many_faces:
             for target_face in many_faces:
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
     else:
         target_face = get_one_face(temp_frame)
         if target_face:
-            temp_frame = swap_face(source_face, target_face, temp_frame)
+            temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
 
     # Convert back if necessary (example, might not be needed depending on workflow)
     # if modules.globals.color_correction and not original_was_bgr:
@@ -893,12 +1011,12 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
                 if "source" in map_entry:
                     source_face = map_entry['source']['face']
                     target_face = map_entry['target']['face']
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+                    temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
         elif modules.globals.many_faces:
             source_face = default_source_face()
             for map_entry in modules.globals.source_target_map:
                 target_face = map_entry['target']['face']
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
 
     # process video targets --------------------------------------------------
     elif is_video(modules.globals.target_path):
@@ -912,7 +1030,7 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
                     source_face = map_entry['source']['face']
                     for frame in target_frame:
                         for target_face in frame['faces']:
-                            temp_frame = swap_face(source_face, target_face, temp_frame)
+                            temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
         elif modules.globals.many_faces:
             source_face = default_source_face()
             for map_entry in modules.globals.source_target_map:
@@ -922,7 +1040,7 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
                 ]
                 for frame in target_frame:
                     for target_face in frame['faces']:
-                        temp_frame = swap_face(source_face, target_face, temp_frame)
+                        temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
 
     # fallback for live feed -------------------------------------------------
     else:
@@ -934,7 +1052,7 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
                         modules.globals.simple_map['target_embeddings'],
                         detected_face.normed_embedding,
                     )
-                    temp_frame = swap_face(
+                    temp_frame = swap_face_ultra_fast(
                         modules.globals.simple_map['source_faces'][closest_centroid_index],
                         detected_face,
                         temp_frame,
@@ -946,7 +1064,7 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
                         detected_faces_centroids, target_embedding
                     )
                     if closest_centroid_index < len(detected_faces):
-                        temp_frame = swap_face(
+                        temp_frame = swap_face_ultra_fast(
                             modules.globals.simple_map['source_faces'][i],
                             detected_faces[closest_centroid_index],
                             temp_frame,
@@ -954,12 +1072,12 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
         elif modules.globals.many_faces and detected_faces:
             source_face = default_source_face()
             for target_face in detected_faces:
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
         elif detected_faces:
             target_face = detected_faces[0]
             source_face = default_source_face()
             if source_face:
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
 
     return temp_frame
 
