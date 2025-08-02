@@ -194,6 +194,19 @@ def update_status(message: str, scope: str = 'DLC.CORE') -> None:
 
 
 def stream_video() -> None:
+    """
+    Process a video file using the selected frame processors and save the result to a new file.
+
+    This function is similar to process_video, but it processes the video stream directly without loading it into memory.
+    This can be useful for larger videos or when memory is limited.
+
+    The video is processed in chunks of 1 frame, and the progress is displayed using tqdm.
+
+    If the --keep-audio flag is set, the audio from the original video is restored after processing the video stream.
+    Otherwise, the audio is discarded.
+
+    The temporary resources are cleaned up after processing.
+    """
     capture = cv2.VideoCapture(modules.globals.target_path)
     if not capture.isOpened():
         update_status('Failed to open video file.')
@@ -232,6 +245,21 @@ def stream_video() -> None:
     clean_temp(modules.globals.target_path)
 
 def start() -> None:
+    """
+    Start the deep live cam process.
+
+    This function checks if the target file is an image or a video.
+    If it is an image, it processes the image using the selected frame processors.
+    If it is a video, it processes the video frame by frame using the selected frame processors.
+
+    The function also handles fps and audio.
+    If the --keep-fps flag is set, the function detects the fps of the original video and creates a new video with the same fps.
+    If the --keep-audio flag is set, the function restores the audio from the original video.
+
+    The function also cleans up the temporary resources after processing.
+
+    :return: None
+    """
     for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
         if not frame_processor.pre_start():
             return

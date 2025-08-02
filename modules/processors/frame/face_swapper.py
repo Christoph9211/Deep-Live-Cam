@@ -82,6 +82,17 @@ def get_face_swapper() -> Any:
 
 def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     # --- No changes needed in swap_face ---
+    """
+    Replace the face in the temp_frame with the target_face, using the source_face as reference.
+
+    Args:
+        source_face (Face): The face to be replaced in temp_frame.
+        target_face (Face): The face to replace the source_face with.
+        temp_frame (Frame): The frame in which the replacement will take place.
+
+    Returns:
+        Frame: The frame with the replaced face.
+    """
     swapper = get_face_swapper()
     if swapper is None:
          # Handle case where model failed to load
@@ -91,15 +102,16 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
 
 
 def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
-    # --- No changes needed in process_frame ---
-    # Ensure the frame is in RGB format if color correction is enabled
-    # Note: InsightFace swapper often expects BGR by default. Double-check if color issues appear.
-    # If color correction is needed *before* swapping and insightface needs BGR:
-    # original_was_bgr = True # Assume input is BGR
-    # if modules.globals.color_correction:
-    #     temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-    #     original_was_bgr = False # Now it's RGB
+    """
+    Replace the face in the temp_frame with the target_face, using the source_face as reference.
 
+    Args:
+        source_face (Face): The face to be replaced in temp_frame.
+        temp_frame (Frame): The frame in which the replacement will take place.
+
+    Returns:
+        Frame: The frame with the replaced face.
+    """
     if modules.globals.many_faces:
         many_faces = get_many_faces(temp_frame)
         if many_faces:
@@ -109,17 +121,22 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
         target_face = get_one_face(temp_frame)
         if target_face:
             temp_frame = swap_face(source_face, target_face, temp_frame)
-
-    # Convert back if necessary (example, might not be needed depending on workflow)
-    # if modules.globals.color_correction and not original_was_bgr:
-    #      temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_RGB2BGR)
-
     return temp_frame
 
 
 def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
     # --- No changes needed in process_frame_v2 ---
     # (Assuming swap_face handles the potential None return from get_face_swapper)
+    """
+    Process a frame (image or video) by replacing the detected face(s) with the target face(s) as specified in the source-target map.
+    
+    Args:
+        temp_frame (Frame): The frame in which the replacement will take place.
+        temp_frame_path (str): The path of the frame being processed, required for video processing.
+    
+    Returns:
+        Frame: The frame with the replaced face(s).
+    """
     if is_image(modules.globals.target_path):
         if modules.globals.many_faces:
             source_face = default_source_face()
@@ -182,6 +199,18 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
 def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any = None) -> None:
     # --- No changes needed in process_frames ---
     # Note: Ensure get_one_face is called only once if possible for efficiency if !map_faces
+    """
+    Process frames by replacing the face(s) in each frame with the target face(s) as specified in the source-target map.
+
+    Args:
+        source_path (str): The path of the source image or video.
+        temp_frame_paths (List[str]): A list of paths to the frames to be processed.
+        progress (Any): Optional progress object to track the progress of the processing.
+
+    Returns:
+        None
+    """
+
     source_face = None
     if not modules.globals.map_faces:
         source_img = cv2.imread(source_path)
@@ -221,6 +250,27 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
 def process_image(source_path: str, target_path: str, output_path: str) -> None:
     # --- No changes needed in process_image ---
     # Note: Added checks for successful image reads and face detection
+    """
+    Processes an image by enhancing or swapping faces.
+
+    This function attempts to read the target image from the specified path.
+    If face mapping is disabled, it reads the source image and attempts to detect
+    a face within it. If successful, it processes the target image using the detected
+    face from the source image. If face mapping is enabled, the function processes
+    the target image directly.
+
+    Args:
+        source_path (str): The file path to the source image.
+        target_path (str): The file path to the target image.
+        output_path (str): The file path where the processed image will be saved.
+
+    Returns:
+        None: The processed image is saved to the specified output path.
+
+    Raises:
+        None: Does not raise exceptions but logs errors if reading or processing fails.
+    """
+
     target_frame = cv2.imread(target_path) # Read original target for processing
     if target_frame is None:
         update_status(f"Error: Could not read target image: {target_path}", NAME)
@@ -252,6 +302,16 @@ def process_image(source_path: str, target_path: str, output_path: str) -> None:
 
 def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
     # --- No changes needed in process_video ---
+    """
+    Process a video frame by frame.
+
+    Args:
+        source_path (str): Path to the source video.
+        temp_frame_paths (List[str]): Paths to the temporary frames of the video.
+
+    Returns:
+        None: The processed video is saved back to the original source path.
+    """
     if modules.globals.map_faces and modules.globals.many_faces:
         update_status('Many faces enabled. Using first source image (if applicable in v2). Processing...', NAME)
     # The core processing logic is delegated, which is good.
@@ -262,6 +322,21 @@ STREAM_SOURCE_FACE = None
 
 
 def process_frame_stream(source_path: str, frame: Frame) -> Frame:
+    """
+    Process a frame from a video stream.
+
+    This function is intended to be used as a callback for video stream processing.
+    It will read the source image if it has not already been read, and then use it to
+    process the frame. If the source image is not provided, or could not be read, it
+    will return the original frame.
+
+    Args:
+        source_path (str): Path to the source image.
+        frame (Frame): The frame to be processed.
+
+    Returns:
+        Frame: The processed frame.
+    """
     global STREAM_SOURCE_FACE
     if not modules.globals.map_faces:
         if STREAM_SOURCE_FACE is None:

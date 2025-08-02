@@ -4,6 +4,17 @@ import modules.globals  # Import the globals to check the color correction toggl
 
 
 def get_video_frame(video_path: str, frame_number: int = 0) -> Any:
+    """
+    Gets a frame from a video.
+
+    Args:
+        video_path (str): The path to the video file.
+        frame_number (int, optional): The frame number to retrieve. Defaults to 0.
+
+    Returns:
+        Any: The frame as a numpy array or None if the frame could not be read.
+    """
+    
     capture = cv2.VideoCapture(video_path)
 
     # Set MJPEG format to ensure correct color space handling

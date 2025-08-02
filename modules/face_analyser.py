@@ -25,6 +25,15 @@ def get_face_analyser() -> Any:
 
 
 def get_one_face(frame: Frame) -> Any:
+    """
+    Detects the face with the leftmost bounding box in the given frame.
+
+    Args:
+        frame: The frame to detect the face in.
+
+    Returns:
+        The face object with the leftmost bounding box, or None if no faces are detected.
+    """
     face = get_face_analyser().get(frame)
     try:
         return min(face, key=lambda x: x.bbox[0])
@@ -33,24 +42,47 @@ def get_one_face(frame: Frame) -> Any:
 
 
 def get_many_faces(frame: Frame) -> Any:
+    """
+    Detects all faces in the given frame.
+
+    Args:
+        frame: The frame to detect the faces in.
+
+    Returns:
+        The list of detected faces, or None if no faces are detected.
+    """
     try:
         return get_face_analyser().get(frame)
     except IndexError:
         return None
 
 def has_valid_map() -> bool:
+    """Returns True if the source-target map contains at least one valid mapping, False otherwise."""
+    
     for map in modules.globals.source_target_map:
         if "source" in map and "target" in map:
             return True
     return False
 
 def default_source_face() -> Any:
+    """
+    Returns the source face of the first valid mapping in the source-target map, or None if no valid mappings are found.
+    
+    Returns:
+        The source face object, or None
+    """
     for map in modules.globals.source_target_map:
         if "source" in map:
             return map['source']['face']
     return None
 
 def simplify_maps() -> Any:
+    """
+    Simplify the source-target map by extracting the embeddings of the target faces and the faces of the source images, and storing them in a new dictionary.
+
+    Returns:
+        None
+    """
     centroids = []
     faces = []
     for map in modules.globals.source_target_map:
@@ -62,6 +94,12 @@ def simplify_maps() -> Any:
     return None
 
 def add_blank_map() -> Any:
+    """
+    Adds a new blank mapping to the source-target map. A new dictionary with an 'id' field is appended to the list, and the 'id' is set to one more than the maximum 'id' of the existing mappings.
+
+    Returns:
+        None
+    """
     try:
         max_id = -1
         if len(modules.globals.source_target_map) > 0:
@@ -74,6 +112,14 @@ def add_blank_map() -> Any:
         return None
     
 def get_unique_faces_from_target_image() -> Any:
+    """
+    Detects all unique faces in the target image and adds them to the source-target map.
+
+    The faces are detected using the FaceAnalysis model, and then the map is populated with the face embeddings and the corresponding cropped regions of the target image.
+
+    Returns:
+        None
+    """
     try:
         modules.globals.source_target_map = []
         target_frame = cv2.imread(modules.globals.target_path)
@@ -95,6 +141,18 @@ def get_unique_faces_from_target_image() -> Any:
     
     
 def get_unique_faces_from_target_video() -> Any:
+    """
+    Detects unique faces in the target video, clusters them, and updates the source-target map.
+
+    This function processes the target video by extracting frames and detecting faces in each frame
+    using the FaceAnalysis model. It then computes face embeddings, clusters them, and maps each face
+    to its closest cluster centroid. The clusters and their associated frames are added to the source-target
+    map, which is used for face swapping or other processing.
+
+    Returns:
+        None
+    """
+
     try:
         modules.globals.source_target_map = []
         frame_face_embeddings = []
@@ -144,6 +202,13 @@ def get_unique_faces_from_target_video() -> Any:
     
 
 def default_target_face():
+    """
+    Select the best target face for each centroid from the list of target faces in frames.
+    
+    The best face is selected based on the highest detection score.
+    
+    The selected target face is stored in the 'target' key of each map in modules.globals.source_target_map.
+    """
     for map in modules.globals.source_target_map:
         best_face = None
         best_frame = None
@@ -169,6 +234,15 @@ def default_target_face():
 
 
 def dump_faces(centroids: Any, frame_face_embeddings: list):
+    """
+    Dump all faces in a list of frames to a temporary directory.
+    
+    The directory structure is as follows: temp/target_path/centroid_index/frame_index_face_index.png
+    
+    Args:
+        centroids (Any): The centroids of the clusters.
+        frame_face_embeddings (list): A list of dictionaries, each containing information about the faces in a frame.
+    """
     temp_directory_path = get_temp_directory_path(modules.globals.target_path)
 
     for i in range(len(centroids)):

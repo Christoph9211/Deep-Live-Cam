@@ -135,6 +135,16 @@ def load_switch_states():
 
 
 def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
+    """
+    Create the main window of the application.
+
+    Parameters:
+    start (Callable[[], None]): The function to call when the "Start" button is clicked.
+    destroy (Callable[[], None]): The function to call when the "Destroy" button is clicked.
+
+    Returns:
+    ctk.CTk: The main window of the application.
+    """
     global source_label, target_label, status_label, show_fps_switch
 
     load_switch_states()
@@ -392,6 +402,18 @@ def close_mapper_window():
 
 
 def analyze_target(start: Callable[[], None], root: ctk.CTk):
+    """
+    Analyze the target and prepare the source-target map for face swapping.
+
+    If the target is an image, get the unique faces from the target image.
+    If the target is a video, get the unique faces from the target video.
+
+    If there are faces in the target, create a pop-up to select source faces.
+    If there are no faces in the target, update the status to "No faces found in target".
+
+    :param start: Callable to start the face swapping
+    :param root: The root widget of the main window
+    """
     if POPUP != None and POPUP.winfo_exists():
         update_status("Please complete pop-up or close it.")
         return
@@ -569,6 +591,11 @@ def update_pop_live_status(text: str) -> None:
 
 
 def update_tumbler(var: str, value: bool) -> None:
+    """
+    Update the fp_ui dictionary with the given variable and value, and save the state.
+    If a live preview is currently running, update the frame processors accordingly.
+    """
+    
     modules.globals.fp_ui[var] = value
     save_switch_states()
     # If we're currently in a live preview, update the frame processors
@@ -599,6 +626,13 @@ def select_source_path() -> None:
 
 
 def swap_faces_paths() -> None:
+    """
+    Swaps the paths for the source and target images.
+
+    Swaps the paths stored in modules.globals.source_path and modules.globals.target_path.
+    Updates the RECENT_DIRECTORY_SOURCE and RECENT_DIRECTORY_TARGET variables to the new directories.
+    Hides the preview window and updates the source and target image previews to reflect the new paths.
+    """
     global RECENT_DIRECTORY_SOURCE, RECENT_DIRECTORY_TARGET
 
     source_path = modules.globals.source_path
@@ -623,6 +657,16 @@ def swap_faces_paths() -> None:
 
 
 def select_target_path() -> None:
+    """
+    Prompts the user to select a target image or video.
+
+    This function opens a file dialog to select a target image or video. If the selected file is an image, it is displayed
+    in the target image preview with a maximum size of 200x200. If the selected file is a video, the first frame of the video
+    is displayed in the target image preview with a maximum size of 200x200.
+
+    If the user cancels the file dialog, the target path is set to None and the target image preview is cleared.
+    """
+    
     global RECENT_DIRECTORY_TARGET, img_ft, vid_ft
 
     PREVIEW.withdraw()
@@ -674,8 +718,16 @@ def select_output_path(start: Callable[[], None]) -> None:
 
 
 def check_and_ignore_nsfw(target, destroy: Callable = None) -> bool:
-    """Check if the target is NSFW.
-    TODO: Consider to make blur the target.
+  
+    """
+    Check if the target is NSFW content and ignore the processing if it is.
+
+    Args:
+        target (str or ndarray): The target image/video file path or frame object
+        destroy (Callable, optional): The function to destroy the window frame. Defaults to None.
+
+    Returns:
+        bool: True if the target is NSFW, False otherwise
     """
     from numpy import ndarray
     from modules.predicter import predict_image, predict_video, predict_frame
@@ -696,6 +748,17 @@ def check_and_ignore_nsfw(target, destroy: Callable = None) -> bool:
 
 
 def fit_image_to_size(image, width: int, height: int):
+    """
+    Resizes an image to fit within the given dimensions while maintaining its aspect ratio.
+
+    Args:
+        image: The image to resize.
+        width: The desired width of the resized image. If None or <= 0, the original width is used.
+        height: The desired height of the resized image. If None or <= 0, the original height is used.
+
+    Returns:
+        The resized image.
+    """
     if width is None or height is None or width <= 0 or height <= 0:
         return image
     h, w, _ = image.shape
@@ -724,6 +787,18 @@ def render_image_preview(image_path: str, size: Tuple[int, int]) -> ctk.CTkImage
 def render_video_preview(
         video_path: str, size: Tuple[int, int], frame_number: int = 0
 ) -> ctk.CTkImage:
+    """
+    Renders a preview image from the given video at the specified frame number.
+
+    Args:
+        video_path: The path to the video file.
+        size: The desired size of the preview image.
+        frame_number: The frame number to render. Defaults to 0.
+
+    Returns:
+        A ctk.CTkImage of the preview image.
+    """
+
     capture = cv2.VideoCapture(video_path)
     if frame_number:
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)

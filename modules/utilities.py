@@ -39,6 +39,20 @@ def run_ffmpeg(args: List[str]) -> bool:
 
 
 def start_ffmpeg_writer(width: int, height: int, fps: float, output_path: str) -> subprocess.Popen:
+    """
+    Starts an FFmpeg process for writing video data.
+
+    Args:
+        width (int): The width of the video frames.
+        height (int): The height of the video frames.
+        fps (float): The frames per second for the video.
+        output_path (str): The path where the output video will be saved.
+
+    Returns:
+        subprocess.Popen: A Popen object representing the FFmpeg process. 
+        The process takes raw video data as input through its stdin pipe.
+    """
+
     commands = [
         "ffmpeg",
         "-hide_banner",

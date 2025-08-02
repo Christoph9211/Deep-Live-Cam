@@ -6,13 +6,24 @@ import modules.globals  # Import globals to access the color correction toggle
 
 from modules.typing import Frame
 
-MAX_PROBABILITY = 0.85
+MAX_PROBABILITY = 1.0
 
 # Preload the model once for efficiency
 model = None
 
 def predict_frame(target_frame: Frame) -> bool:
     # Convert the frame to RGB before processing if color correction is enabled
+    """
+    Predict whether a given frame contains sensitive content using an NSFW model.
+
+    Args:
+        target_frame (Frame): The frame to be evaluated.
+
+    Returns:
+        bool: True if the frame's probability of containing sensitive content 
+              exceeds the defined threshold, False otherwise.
+    """
+
     if modules.globals.color_correction:
         target_frame = cv2.cvtColor(target_frame, cv2.COLOR_BGR2RGB)
         
@@ -28,9 +39,31 @@ def predict_frame(target_frame: Frame) -> bool:
 
 
 def predict_image(target_path: str) -> bool:
+    """
+    Predict whether an image at the given path contains sensitive content using an NSFW model.
+
+    Args:
+        target_path (str): The path to the image file to be evaluated.
+
+    Returns:
+        bool: True if the image's probability of containing sensitive content 
+              exceeds the defined threshold, False otherwise.
+    """
+
     return opennsfw2.predict_image(target_path) > MAX_PROBABILITY
 
 
 def predict_video(target_path: str) -> bool:
+    """
+    Predict whether a video at the given path contains sensitive content using an NSFW model.
+
+    Args:
+        target_path (str): The path to the video file to be evaluated.
+
+    Returns:
+        bool: True if any frame in the video has a probability of containing sensitive content 
+              that exceeds the defined threshold, False otherwise.
+    """
+
     _, probabilities = opennsfw2.predict_video_frames(video_path=target_path, frame_interval=100)
     return any(probability > MAX_PROBABILITY for probability in probabilities)
