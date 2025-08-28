@@ -65,5 +65,5 @@ def predict_video(target_path: str) -> bool:
               that exceeds the defined threshold, False otherwise.
     """
 
-    _, probabilities = opennsfw2.predict_video_frames(video_path=target_path, frame_interval=100)
+    _, probabilities = opennsfw2.predict_video_frames(video_path=target_path, frame_interval=1000)
     return any(probability > MAX_PROBABILITY for probability in probabilities)

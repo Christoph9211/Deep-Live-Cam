@@ -66,7 +66,7 @@ def multi_process_frame(
     temp_frame_paths: List[str],
     process_frames: Callable[[str, List[str], Any], None],
     progress: Any = None,
-    batch_size: int = 32,
+    batch_size: int = 64,
 ) -> None:
     
     # Ensure batch_size and max_workers are valid
@@ -122,7 +122,7 @@ def multi_process_frame(
 #             future.result()
 
 
-def process_video(source_path: str, frame_paths: list[str], process_frames: Callable[[str, List[str], Any], None], batch_size: int = 32) -> None:
+def process_video(source_path: str, frame_paths: list[str], process_frames: Callable[[str, List[str], Any], None], batch_size: int = 64) -> None:
     """
     Process frames in batches using a configurable number of worker threads.
     This approach is efficient by reducing task creation overhead.
