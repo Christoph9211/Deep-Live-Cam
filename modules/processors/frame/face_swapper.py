@@ -80,7 +80,7 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame: # pyright: ignore[reportInvalidTypeForm]
     # --- No changes needed in swap_face ---
     """
     Replace the face in the temp_frame with the target_face, using the source_face as reference.
@@ -101,7 +101,7 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     return swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
 
-def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
+def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # pyright: ignore[reportInvalidTypeForm]
     """
     Replace the face in the temp_frame with the target_face, using the source_face as reference.
 
