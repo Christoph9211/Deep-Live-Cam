@@ -105,6 +105,8 @@ def save_switch_states():
         "show_fps": modules.globals.show_fps,
         "mouth_mask": modules.globals.mouth_mask,
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
+        "mask_size": modules.globals.mask_size,
+        "mask_feather_ratio": modules.globals.mask_feather_ratio,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -128,6 +130,10 @@ def load_switch_states():
         modules.globals.mouth_mask = switch_states.get("mouth_mask", False)
         modules.globals.show_mouth_mask_box = switch_states.get(
             "show_mouth_mask_box", False
+        )
+        modules.globals.mask_size = switch_states.get("mask_size", modules.globals.mask_size)
+        modules.globals.mask_feather_ratio = switch_states.get(
+            "mask_feather_ratio", modules.globals.mask_feather_ratio
         )
     except FileNotFoundError:
         # If the file doesn't exist, use default values
@@ -300,7 +306,10 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         text=_("Mouth Mask"),
         variable=mouth_mask_var,
         cursor="hand2",
-        command=lambda: setattr(modules.globals, "mouth_mask", mouth_mask_var.get()),
+        command=lambda: (
+            setattr(modules.globals, "mouth_mask", mouth_mask_var.get()),
+            save_switch_states(),
+        ),
     )
     mouth_mask_switch.place(relx=0.1, rely=0.55)
 
@@ -310,11 +319,62 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         text=_("Show Mouth Mask Box"),
         variable=show_mouth_mask_box_var,
         cursor="hand2",
-        command=lambda: setattr(
-            modules.globals, "show_mouth_mask_box", show_mouth_mask_box_var.get()
+        command=lambda: (
+            setattr(modules.globals, "show_mouth_mask_box", show_mouth_mask_box_var.get()),
+            save_switch_states(),
         ),
     )
     show_mouth_mask_box_switch.place(relx=0.6, rely=0.55)
+
+    # --- Mouth Mask Sliders ---
+    # Mask Size slider (0.5x - 2.0x)
+    mask_size_label = ctk.CTkLabel(
+        root,
+        text=f"Mask Size: {modules.globals.mask_size:.2f}x",
+    )
+    mask_size_label.place(relx=0.1, rely=0.585)
+
+    def on_mask_size_change(val: float):
+        # Snap to 0.05 steps for stability
+        snapped = round(float(val) / 0.05) * 0.05
+        modules.globals.mask_size = float(snapped)
+        mask_size_label.configure(text=f"Mask Size: {modules.globals.mask_size:.2f}x")
+        save_switch_states()
+
+    mask_size_slider = ctk.CTkSlider(
+        root,
+        from_=0.5,
+        to=2.0,
+        number_of_steps=30,
+        command=on_mask_size_change,
+        width=160,
+    )
+    mask_size_slider.set(modules.globals.mask_size)
+    mask_size_slider.place(relx=0.28, rely=0.585)
+
+    # Feather Ratio slider (2 - 32)
+    feather_label = ctk.CTkLabel(
+        root,
+        text=f"Feather: {int(modules.globals.mask_feather_ratio)}",
+    )
+    feather_label.place(relx=0.6, rely=0.585)
+
+    def on_feather_change(val: float):
+        new_val = max(1, int(round(val)))
+        modules.globals.mask_feather_ratio = int(new_val)
+        feather_label.configure(text=f"Feather: {modules.globals.mask_feather_ratio}")
+        save_switch_states()
+
+    feather_slider = ctk.CTkSlider(
+        root,
+        from_=2,
+        to=32,
+        number_of_steps=30,
+        command=on_feather_change,
+        width=160,
+    )
+    feather_slider.set(float(modules.globals.mask_feather_ratio))
+    feather_slider.place(relx=0.78, rely=0.585)
 
     start_button = ctk.CTkButton(
         root, text=_("Start"), cursor="hand2", command=lambda: analyze_target(start, root)

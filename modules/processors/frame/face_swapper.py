@@ -1,8 +1,9 @@
-import os # <-- Added for os.path.exists
+import os  # <-- Added for os.path.exists
 from typing import Any, List
 import cv2
 import insightface
 import threading
+import numpy as np
 
 import modules.globals
 import modules.processors.frame.core
@@ -80,7 +81,94 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame: # pyright: ignore[reportInvalidTypeForm]
+def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:
+    """Blend the original mouth region back onto the swapped frame.
+
+    Uses 5-point landmarks if available; otherwise falls back to a bbox heuristic.
+    Respects globals: mouth_mask, show_mouth_mask_box, mask_feather_ratio, mask_down_size, mask_size.
+    """
+    try:
+        h, w = swapped_frame.shape[:2]
+
+        down = float(getattr(modules.globals, 'mask_down_size', 0.5) or 0.5)
+        size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
+        feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
+
+        # Prepare a working mask canvas (possibly downscaled for performance)
+        ds_w = max(1, int(w * down))
+        ds_h = max(1, int(h * down))
+        mask_small = np.zeros((ds_h, ds_w), dtype=np.float32)
+
+        # Determine mouth geometry
+        has_kps = hasattr(target_face, 'kps') and target_face.kps is not None
+        if has_kps:
+            kps = np.array(target_face.kps, dtype=np.float32)  # shape (5,2)
+            # Landmark indices: [left_eye, right_eye, nose, left_mouth, right_mouth]
+            lm_left = kps[3]
+            lm_right = kps[4]
+            mouth_center = (lm_left + lm_right) / 2.0
+            mouth_width = float(np.linalg.norm(lm_right - lm_left))
+            # Heuristic for mouth height
+            mouth_height = mouth_width * 0.6
+
+            cx = float(mouth_center[0])
+            cy = float(mouth_center[1])
+            ax = max(1.0, (mouth_width * 0.5) * size_scale)
+            ay = max(1.0, (mouth_height * 0.5) * size_scale)
+        else:
+            # Fallback: Use lower part of face bbox
+            if hasattr(target_face, 'bbox') and target_face.bbox is not None:
+                x1, y1, x2, y2 = map(float, target_face.bbox)
+            else:
+                x1, y1, x2, y2 = 0.0, 0.0, float(w), float(h)
+            cx = (x1 + x2) / 2.0
+            cy = y1 + (y2 - y1) * 0.72
+            ax = max(1.0, (x2 - x1) * 0.20 * size_scale)
+            ay = max(1.0, (y2 - y1) * 0.14 * size_scale)
+
+        # Draw ellipse on downscaled canvas
+        cx_ds = int(round(cx * down))
+        cy_ds = int(round(cy * down))
+        ax_ds = max(1, int(round(ax * down)))
+        ay_ds = max(1, int(round(ay * down)))
+        cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, 1.0, -1)
+
+        # Feather edges for seamless blend
+        feather = max(1, int(max(ax_ds, ay_ds) / max(feather_ratio, 1.0)))
+        if feather % 2 == 0:
+            feather += 1
+        if feather >= 3:
+            mask_small = cv2.GaussianBlur(mask_small, (feather, feather), 0)
+
+        # Upscale mask to full size
+        mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
+
+        # Composite: keep original mouth region
+        composed = (original_frame.astype(np.float32) * mask_3 +
+                    swapped_frame.astype(np.float32) * (1.0 - mask_3))
+        composed = np.clip(composed, 0, 255).astype(np.uint8)
+
+        # Optional: visualize mask boundary
+        if getattr(modules.globals, 'show_mouth_mask_box', False):
+            # Draw ellipse outline on result frame (full-res coords)
+            cv2.ellipse(
+                composed,
+                (int(round(cx)), int(round(cy))),
+                (int(round(ax)), int(round(ay))),
+                0,
+                0,
+                360,
+                (0, 255, 0),
+                2,
+            )
+        return composed
+    except Exception as e:
+        update_status(f"Mouth mask failed: {e}", NAME)
+        return swapped_frame
+
+
+def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:  # pyright: ignore[reportInvalidTypeForm]
     # --- No changes needed in swap_face ---
     """
     Replace the face in the temp_frame with the target_face, using the source_face as reference.
@@ -95,10 +183,17 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     """
     swapper = get_face_swapper()
     if swapper is None:
-         # Handle case where model failed to load
-         update_status("Face swapper model not loaded, skipping swap.", NAME)
-         return temp_frame
-    return swapper.get(temp_frame, target_face, source_face, paste_back=True)
+        # Handle case where model failed to load
+        update_status("Face swapper model not loaded, skipping swap.", NAME)
+        return temp_frame
+
+    original_frame = temp_frame.copy()
+    swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+
+    # Apply mouth mask if enabled
+    if getattr(modules.globals, 'mouth_mask', False):
+        swapped = _apply_mouth_mask(original_frame, swapped, target_face)
+    return swapped
 
 
 def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # pyright: ignore[reportInvalidTypeForm]
