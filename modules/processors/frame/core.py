@@ -78,7 +78,7 @@ def multi_process_frame(
         temp_frame_paths (List[str]): Paths to the temporary frames of the video.
         process_frames (Callable[[str, List[str], Any], None]): Function to process a batch of frames.
         progress (Any, optional): Optional progress object to track the progress of the processing.
-        batch_size (int, optional): Number of frames to process in each batch. Defaults to 32.
+        batch_size (int, optional): Number of frames to process in each batch. Defaults to 64.
 
     Returns:
         None
@@ -95,11 +95,12 @@ def multi_process_frame(
         while True:
             batch: List[str] = []
             try:
-                # More efficient way to pull a batch from the queue
+                # Pull up to effective_batch_size items without blocking
                 for _ in range(effective_batch_size):
                     batch.append(frame_queue.get_nowait())
             except Empty:
-                pass  # The queue is empty, process the final partial batch
+                # Stop filling this batch when the queue runs dry
+                break
 
             if not batch:
                 # No items were retrieved, so the queue was empty. Worker can exit.
@@ -131,9 +132,9 @@ def process_video(source_path: str, frame_paths: list[str], process_frames: Call
         source_path (str): Source path of the video/image
         frame_paths (list[str]): List of frame paths to process
         process_frames (Callable[[str, List[str], Any], None]): Function to process frames
-        batch_size (int, optional): Number of frames to process in a single batch. Defaults to 32.
+        batch_size (int, optional): Number of frames to process in a single batch. Defaults to 64.
     """
-
+    
     progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
     total = len(frame_paths)
     with tqdm(total=total, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:

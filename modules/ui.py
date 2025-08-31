@@ -35,6 +35,7 @@ if platform.system() == "Windows":
 ROOT = None
 POPUP = None
 POPUP_LIVE = None
+POPUP_ADV = None
 ROOT_HEIGHT = 700
 ROOT_WIDTH = 600
 
@@ -107,6 +108,17 @@ def save_switch_states():
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
         "mask_size": modules.globals.mask_size,
         "mask_feather_ratio": modules.globals.mask_feather_ratio,
+        # New semantic preservation + smoothing + backend
+        "preserve_teeth": modules.globals.preserve_teeth,
+        "preserve_hairline": modules.globals.preserve_hairline,
+        "segmenter_backend": modules.globals.segmenter_backend,
+        "smoothing_enabled": modules.globals.smoothing_enabled,
+        "smoothing_stream_only": modules.globals.smoothing_stream_only,
+        "smoothing_use_fps": modules.globals.smoothing_use_fps,
+        "smoothing_fps": modules.globals.smoothing_fps,
+        "smoothing_min_cutoff": modules.globals.smoothing_min_cutoff,
+        "smoothing_beta": modules.globals.smoothing_beta,
+        "smoothing_dcutoff": modules.globals.smoothing_dcutoff,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -135,6 +147,17 @@ def load_switch_states():
         modules.globals.mask_feather_ratio = switch_states.get(
             "mask_feather_ratio", modules.globals.mask_feather_ratio
         )
+        # New semantic preservation + smoothing + backend
+        modules.globals.preserve_teeth = switch_states.get("preserve_teeth", False)
+        modules.globals.preserve_hairline = switch_states.get("preserve_hairline", False)
+        modules.globals.segmenter_backend = switch_states.get("segmenter_backend", modules.globals.segmenter_backend)
+        modules.globals.smoothing_enabled = switch_states.get("smoothing_enabled", False)
+        modules.globals.smoothing_stream_only = switch_states.get("smoothing_stream_only", True)
+        modules.globals.smoothing_use_fps = switch_states.get("smoothing_use_fps", True)
+        modules.globals.smoothing_fps = switch_states.get("smoothing_fps", modules.globals.smoothing_fps)
+        modules.globals.smoothing_min_cutoff = switch_states.get("smoothing_min_cutoff", modules.globals.smoothing_min_cutoff)
+        modules.globals.smoothing_beta = switch_states.get("smoothing_beta", modules.globals.smoothing_beta)
+        modules.globals.smoothing_dcutoff = switch_states.get("smoothing_dcutoff", modules.globals.smoothing_dcutoff)
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
@@ -391,6 +414,12 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
     preview_button.place(relx=0.65, rely=0.80, relwidth=0.2, relheight=0.05)
 
+    # Advanced settings popup
+    adv_button = ctk.CTkButton(
+        root, text=_("Advanced"), cursor="hand2", command=lambda: open_advanced_popup(root)
+    )
+    adv_button.place(relx=0.40, rely=0.80, relwidth=0.2, relheight=0.05)
+
     # --- Camera Selection ---
     camera_label = ctk.CTkLabel(root, text=_("Select Camera:"))
     camera_label.place(relx=0.1, rely=0.86, relwidth=0.2, relheight=0.05)
@@ -450,6 +479,111 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
 
     return root
+
+def open_advanced_popup(root: ctk.CTk) -> None:
+    global POPUP_ADV
+    if POPUP_ADV and POPUP_ADV.winfo_exists():
+        POPUP_ADV.focus()
+        return
+
+    POPUP_ADV = ctk.CTkToplevel(root)
+    POPUP_ADV.title(_("Advanced Settings"))
+    POPUP_ADV.geometry(f"{POPUP_WIDTH}x{POPUP_HEIGHT}")
+    POPUP_ADV.focus()
+
+    frame = ctk.CTkScrollableFrame(POPUP_ADV, width=POPUP_SCROLL_WIDTH, height=POPUP_SCROLL_HEIGHT)
+    frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+    row = 0
+
+    # Segmenter backend
+    seg_label = ctk.CTkLabel(frame, text=_("Segmenter Backend"))
+    seg_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    seg_var = ctk.StringVar(value=str(modules.globals.segmenter_backend))
+    seg_menu = ctk.CTkOptionMenu(frame, variable=seg_var, values=["auto", "mediapipe", "bisenet"],
+                                 command=lambda v: (setattr(modules.globals, "segmenter_backend", v), save_switch_states()))
+    seg_menu.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # Preservation toggles
+    teeth_var = ctk.BooleanVar(value=modules.globals.preserve_teeth)
+    teeth_switch = ctk.CTkSwitch(frame, text=_("Preserve Teeth"), variable=teeth_var, cursor="hand2",
+                                 command=lambda: (setattr(modules.globals, "preserve_teeth", teeth_var.get()), save_switch_states()))
+    teeth_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    hair_var = ctk.BooleanVar(value=modules.globals.preserve_hairline)
+    hair_switch = ctk.CTkSwitch(frame, text=_("Preserve Hairline"), variable=hair_var, cursor="hand2",
+                                command=lambda: (setattr(modules.globals, "preserve_hairline", hair_var.get()), save_switch_states()))
+    hair_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    row += 1
+
+    # Smoothing toggles
+    smoothing_var = ctk.BooleanVar(value=modules.globals.smoothing_enabled)
+    smoothing_switch = ctk.CTkSwitch(frame, text=_("Enable Smoothing"), variable=smoothing_var, cursor="hand2",
+                                     command=lambda: (setattr(modules.globals, "smoothing_enabled", smoothing_var.get()), save_switch_states()))
+    smoothing_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    stream_only_var = ctk.BooleanVar(value=modules.globals.smoothing_stream_only)
+    stream_only_switch = ctk.CTkSwitch(frame, text=_("Smoothing Stream Only"), variable=stream_only_var, cursor="hand2",
+                                       command=lambda: (setattr(modules.globals, "smoothing_stream_only", stream_only_var.get()), save_switch_states()))
+    stream_only_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    row += 1
+
+    use_fps_var = ctk.BooleanVar(value=modules.globals.smoothing_use_fps)
+    use_fps_switch = ctk.CTkSwitch(frame, text=_("Use Fixed FPS for Smoothing"), variable=use_fps_var, cursor="hand2",
+                                   command=lambda: (setattr(modules.globals, "smoothing_use_fps", use_fps_var.get()), save_switch_states()))
+    use_fps_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    row += 1
+
+    # Smoothing sliders
+    # FPS
+    fps_label = ctk.CTkLabel(frame, text=f"FPS: {modules.globals.smoothing_fps:.0f}")
+    fps_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_fps_change(val: float):
+        modules.globals.smoothing_fps = float(round(val))
+        fps_label.configure(text=f"FPS: {modules.globals.smoothing_fps:.0f}")
+        save_switch_states()
+    fps_slider = ctk.CTkSlider(frame, from_=10, to=120, number_of_steps=110, command=on_fps_change, width=200)
+    fps_slider.set(float(modules.globals.smoothing_fps))
+    fps_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # Min cutoff
+    mc_label = ctk.CTkLabel(frame, text=f"Min Cutoff: {modules.globals.smoothing_min_cutoff:.2f}")
+    mc_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_mc_change(val: float):
+        modules.globals.smoothing_min_cutoff = float(round(val, 2))
+        mc_label.configure(text=f"Min Cutoff: {modules.globals.smoothing_min_cutoff:.2f}")
+        save_switch_states()
+    mc_slider = ctk.CTkSlider(frame, from_=0.1, to=5.0, number_of_steps=98, command=on_mc_change, width=200)
+    mc_slider.set(float(modules.globals.smoothing_min_cutoff))
+    mc_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # Beta
+    beta_label = ctk.CTkLabel(frame, text=f"Beta: {modules.globals.smoothing_beta:.2f}")
+    beta_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_beta_change(val: float):
+        modules.globals.smoothing_beta = float(round(val, 2))
+        beta_label.configure(text=f"Beta: {modules.globals.smoothing_beta:.2f}")
+        save_switch_states()
+    beta_slider = ctk.CTkSlider(frame, from_=0.0, to=2.0, number_of_steps=200, command=on_beta_change, width=200)
+    beta_slider.set(float(modules.globals.smoothing_beta))
+    beta_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # dCutoff
+    dc_label = ctk.CTkLabel(frame, text=f"dCutoff: {modules.globals.smoothing_dcutoff:.2f}")
+    dc_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_dc_change(val: float):
+        modules.globals.smoothing_dcutoff = float(round(val, 2))
+        dc_label.configure(text=f"dCutoff: {modules.globals.smoothing_dcutoff:.2f}")
+        save_switch_states()
+    dc_slider = ctk.CTkSlider(frame, from_=0.1, to=5.0, number_of_steps=98, command=on_dc_change, width=200)
+    dc_slider.set(float(modules.globals.smoothing_dcutoff))
+    dc_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    close_button = ctk.CTkButton(POPUP_ADV, text=_("Close"), command=lambda: POPUP_ADV.destroy())
+    close_button.grid(row=1, column=0, padx=10, pady=10)
 
 def close_mapper_window():
     global POPUP, POPUP_LIVE

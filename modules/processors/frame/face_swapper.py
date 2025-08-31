@@ -1,5 +1,7 @@
 import os  # <-- Added for os.path.exists
-from typing import Any, List
+import time
+import math
+from typing import Any, List, Optional, Tuple
 import cv2
 import insightface
 import threading
@@ -14,10 +16,127 @@ from modules.face_analyser import get_one_face, get_many_faces, default_source_f
 from modules.typing import Face, Frame
 from modules.utilities import conditional_download, resolve_relative_path, is_image, is_video
 from modules.cluster_analysis import find_closest_centroid
+try:
+    # Optional semantic segmenter (MediaPipe Face Mesh based)
+    from modules.segmenters.semantic import get_mouth_mask as get_semantic_mouth_mask
+except Exception:
+    get_semantic_mouth_mask = None  # type: ignore
+
+# Try to import unified region masks provider
+try:
+    from modules.segmenters.semantic import get_region_masks as get_semantic_region_masks  # type: ignore
+except Exception:
+    try:
+        from modules.segmenters.bisenet_onnx import get_region_masks as get_semantic_region_masks  # type: ignore
+    except Exception:
+        get_semantic_region_masks = None  # type: ignore
 
 FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
+
+# -----------------------------
+# One-Euro filter for smoothing
+# -----------------------------
+
+class _LowPass:
+    def __init__(self, alpha: float, init: Optional[float] = None):
+        self.alpha = alpha
+        self.s: Optional[float] = init
+
+    def filter(self, x: float, alpha: Optional[float] = None) -> float:
+        if alpha is None:
+            alpha = self.alpha
+        if self.s is None:
+            self.s = x
+        else:
+            self.s = alpha * x + (1.0 - alpha) * self.s
+        return self.s
+
+
+def _alpha(cutoff: float, dt: float) -> float:
+    if cutoff <= 0.0:
+        return 1.0
+    tau = 1.0 / (2.0 * math.pi * cutoff)
+    return 1.0 / (1.0 + tau / max(dt, 1e-6))
+
+
+class _OneEuro:
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.0, dcutoff: float = 1.0):
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.dcutoff = float(dcutoff)
+        self.dx = _LowPass(alpha=1.0)
+        self.x = _LowPass(alpha=1.0)
+        self._prev: Optional[float] = None
+
+    def filter(self, x: float, dt: float) -> float:
+        if self._prev is None:
+            self._prev = x
+        # Derivative of the signal
+        dx = (x - self._prev) / max(dt, 1e-6)
+        self._prev = x
+        edx = self.dx.filter(dx, _alpha(self.dcutoff, dt))
+        cutoff = self.min_cutoff + self.beta * abs(edx)
+        return self.x.filter(x, _alpha(cutoff, dt))
+
+
+class _VectorEuro:
+    def __init__(self, dim: int, min_cutoff: float, beta: float, dcutoff: float):
+        self.filters = [_OneEuro(min_cutoff, beta, dcutoff) for _ in range(dim)]
+
+    def filter(self, vec: List[float], dt: float) -> List[float]:
+        return [self.filters[i].filter(float(vec[i]), dt) for i in range(len(vec))]
+
+
+# Smoothing state
+_SMOOTH_SINGLE: Optional[Tuple[_VectorEuro, _VectorEuro]] = None  # (kps10, bbox4)
+_SMOOTH_LAST_TS: Optional[float] = None
+_SMOOTH_IN_STREAM: bool = False
+
+
+def _smoothing_dt() -> float:
+    if getattr(modules.globals, 'smoothing_use_fps', True):
+        fps = float(getattr(modules.globals, 'smoothing_fps', 30.0) or 30.0)
+        return 1.0 / max(1.0, fps)
+    global _SMOOTH_LAST_TS
+    now = time.perf_counter()
+    if _SMOOTH_LAST_TS is None:
+        _SMOOTH_LAST_TS = now
+        return 1.0 / float(getattr(modules.globals, 'smoothing_fps', 30.0) or 30.0)
+    dt = now - _SMOOTH_LAST_TS
+    _SMOOTH_LAST_TS = now
+    return max(1e-3, dt)
+
+
+def _get_single_filters() -> Tuple[_VectorEuro, _VectorEuro]:
+    global _SMOOTH_SINGLE
+    if _SMOOTH_SINGLE is None:
+        mc = float(getattr(modules.globals, 'smoothing_min_cutoff', 1.0))
+        beta = float(getattr(modules.globals, 'smoothing_beta', 0.0))
+        dc = float(getattr(modules.globals, 'smoothing_dcutoff', 1.0))
+        _SMOOTH_SINGLE = (_VectorEuro(10, mc, beta, dc), _VectorEuro(4, mc, beta, dc))
+    return _SMOOTH_SINGLE
+
+
+def _smooth_face_inplace(face: Face, dt: float) -> None:
+    try:
+        kps = getattr(face, 'kps', None)
+        bbox = getattr(face, 'bbox', None)
+        if kps is None and bbox is None:
+            return
+        kpsf, bboxf = _get_single_filters()
+        if kps is not None:
+            flat = [float(v) for v in kps.flatten().tolist()]
+            out = kpsf.filter(flat, dt)
+            face.kps = np.asarray(out, dtype=np.float32).reshape(-1, 2)  # type: ignore[attr-defined]
+        if bbox is not None:
+            bb = [float(b) for b in bbox]
+            outb = bboxf.filter(bb, dt)
+            face.bbox = np.asarray(outb, dtype=np.float32)  # type: ignore[attr-defined]
+    except Exception:
+        # Be robust: if smoothing fails, skip without breaking swap
+        pass
 
 
 def pre_check() -> bool:
@@ -82,33 +201,106 @@ def get_face_swapper() -> Any:
 
 
 def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:
-    """Blend the original mouth region back onto the swapped frame.
+    """Blend original mouth region back using semantic parsing when available.
 
-    Uses 5-point landmarks if available; otherwise falls back to a bbox heuristic.
+    Strategy:
+    - Try semantic mask via MediaPipe Face Mesh (if installed).
+    - Fall back to existing ellipse heuristic using 5-point kps or bbox.
+
     Respects globals: mouth_mask, show_mouth_mask_box, mask_feather_ratio, mask_down_size, mask_size.
     """
     try:
         h, w = swapped_frame.shape[:2]
 
+        # 1) Try unified region masks if available (BiSeNet preferred)
+        if get_semantic_region_masks is not None:
+            try:
+                masks = get_semantic_region_masks(swapped_frame, target_face)  # type: ignore
+            except Exception:
+                masks = None
+            if isinstance(masks, dict):
+                composed = swapped_frame.astype(np.float32)
+                applied = False
+                # Teeth/inner mouth preservation
+                if getattr(modules.globals, 'preserve_teeth', False) and 'inner_mouth' in masks and isinstance(masks['inner_mouth'], np.ndarray):
+                    m = masks['inner_mouth'].astype(np.float32)
+                    m3 = np.repeat(m[:, :, None], 3, axis=2)
+                    composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
+                    applied = True
+                # Mouth/lips preservation
+                if getattr(modules.globals, 'mouth_mask', False) and 'mouth' in masks and isinstance(masks['mouth'], np.ndarray):
+                    m = masks['mouth'].astype(np.float32)
+                    m3 = np.repeat(m[:, :, None], 3, axis=2)
+                    composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
+                    applied = True
+                # Hairline preservation
+                if getattr(modules.globals, 'preserve_hairline', False) and 'hair' in masks and isinstance(masks['hair'], np.ndarray):
+                    m = masks['hair'].astype(np.float32)
+                    m3 = np.repeat(m[:, :, None], 3, axis=2)
+                    composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
+                    applied = True
+
+                composed = np.clip(composed, 0, 255).astype(np.uint8)
+                if applied:
+                    # Optional overlay for mouth mask
+                    if getattr(modules.globals, 'show_mouth_mask_box', False):
+                        try:
+                            to_draw = []
+                            if getattr(modules.globals, 'mouth_mask', False) and 'mouth' in masks:
+                                to_draw.append(masks['mouth'])
+                            if getattr(modules.globals, 'preserve_teeth', False) and 'inner_mouth' in masks:
+                                to_draw.append(masks['inner_mouth'])
+                            if getattr(modules.globals, 'preserve_hairline', False) and 'hair' in masks:
+                                to_draw.append(masks['hair'])
+                            for ms in to_draw:
+                                vis = (ms * 255).astype(np.uint8)
+                                contours, _ = cv2.findContours(vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                cv2.drawContours(composed, contours, -1, (0, 255, 0), 2)
+                        except Exception:
+                            pass
+                    return composed
+
+        # 1b) Try single semantic mouth mask (MediaPipe path)
+        mask = None
+        if get_semantic_mouth_mask is not None:
+            try:
+                mask = get_semantic_mouth_mask(swapped_frame, target_face)
+            except Exception:
+                mask = None
+        if isinstance(mask, np.ndarray) and mask.shape[:2] == (h, w) and getattr(modules.globals, 'mouth_mask', False):
+            feather = int(max(3, max(w, h) / max(float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8), 1.0)))
+            if feather % 2 == 0:
+                feather += 1
+            if feather >= 3:
+                mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+            mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
+            composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
+            composed = np.clip(composed, 0, 255).astype(np.uint8)
+            if getattr(modules.globals, 'show_mouth_mask_box', False):
+                try:
+                    vis = (mask * 255).astype(np.uint8)
+                    contours, _ = cv2.findContours(vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(composed, contours, -1, (0, 255, 0), 2)
+                except Exception:
+                    pass
+            return composed
+
+        # 2) Fallback: ellipse heuristic
         down = float(getattr(modules.globals, 'mask_down_size', 0.5) or 0.5)
         size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
         feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
 
-        # Prepare a working mask canvas (possibly downscaled for performance)
         ds_w = max(1, int(w * down))
         ds_h = max(1, int(h * down))
         mask_small = np.zeros((ds_h, ds_w), dtype=np.float32)
 
-        # Determine mouth geometry
         has_kps = hasattr(target_face, 'kps') and target_face.kps is not None
         if has_kps:
-            kps = np.array(target_face.kps, dtype=np.float32)  # shape (5,2)
-            # Landmark indices: [left_eye, right_eye, nose, left_mouth, right_mouth]
+            kps = np.array(target_face.kps, dtype=np.float32)
             lm_left = kps[3]
             lm_right = kps[4]
             mouth_center = (lm_left + lm_right) / 2.0
             mouth_width = float(np.linalg.norm(lm_right - lm_left))
-            # Heuristic for mouth height
             mouth_height = mouth_width * 0.6
 
             cx = float(mouth_center[0])
@@ -116,7 +308,6 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
             ax = max(1.0, (mouth_width * 0.5) * size_scale)
             ay = max(1.0, (mouth_height * 0.5) * size_scale)
         else:
-            # Fallback: Use lower part of face bbox
             if hasattr(target_face, 'bbox') and target_face.bbox is not None:
                 x1, y1, x2, y2 = map(float, target_face.bbox)
             else:
@@ -126,41 +317,29 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
             ax = max(1.0, (x2 - x1) * 0.20 * size_scale)
             ay = max(1.0, (y2 - y1) * 0.14 * size_scale)
 
-        # Draw ellipse on downscaled canvas
         cx_ds = int(round(cx * down))
         cy_ds = int(round(cy * down))
         ax_ds = max(1, int(round(ax * down)))
         ay_ds = max(1, int(round(ay * down)))
         cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, 1.0, -1)
 
-        # Feather edges for seamless blend
         feather = max(1, int(max(ax_ds, ay_ds) / max(feather_ratio, 1.0)))
         if feather % 2 == 0:
             feather += 1
         if feather >= 3:
             mask_small = cv2.GaussianBlur(mask_small, (feather, feather), 0)
 
-        # Upscale mask to full size
         mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_LINEAR)
         mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
-
-        # Composite: keep original mouth region
-        composed = (original_frame.astype(np.float32) * mask_3 +
-                    swapped_frame.astype(np.float32) * (1.0 - mask_3))
+        composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
         composed = np.clip(composed, 0, 255).astype(np.uint8)
 
-        # Optional: visualize mask boundary
         if getattr(modules.globals, 'show_mouth_mask_box', False):
-            # Draw ellipse outline on result frame (full-res coords)
             cv2.ellipse(
                 composed,
                 (int(round(cx)), int(round(cy))),
                 (int(round(ax)), int(round(ay))),
-                0,
-                0,
-                360,
-                (0, 255, 0),
-                2,
+                0, 0, 360, (0, 255, 0), 2,
             )
         return composed
     except Exception as e:
@@ -188,10 +367,19 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         return temp_frame
 
     original_frame = temp_frame.copy()
+    # Optional smoothing on target landmarks/bbox
+    if getattr(modules.globals, 'smoothing_enabled', False) and not getattr(modules.globals, 'many_faces', False):
+        if (not getattr(modules.globals, 'smoothing_stream_only', True)) or _SMOOTH_IN_STREAM:
+            _smooth_face_inplace(target_face, _smoothing_dt())
+
     swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
-    # Apply mouth mask if enabled
-    if getattr(modules.globals, 'mouth_mask', False):
+    # Apply region preservation if any toggle is enabled
+    if (
+        getattr(modules.globals, 'mouth_mask', False)
+        or getattr(modules.globals, 'preserve_teeth', False)
+        or getattr(modules.globals, 'preserve_hairline', False)
+    ):
         swapped = _apply_mouth_mask(original_frame, swapped, target_face)
     return swapped
 
@@ -433,13 +621,26 @@ def process_frame_stream(source_path: str, frame: Frame) -> Frame:
         Frame: The processed frame.
     """
     global STREAM_SOURCE_FACE
+    global _SMOOTH_IN_STREAM
     if not modules.globals.map_faces:
         if STREAM_SOURCE_FACE is None:
             source_img = cv2.imread(source_path)
             if source_img is not None:
                 STREAM_SOURCE_FACE = get_one_face(source_img)
         if STREAM_SOURCE_FACE is not None:
-            return process_frame(STREAM_SOURCE_FACE, frame)
+            # Mark smoothing context as streaming for this call only
+            prev_flag = _SMOOTH_IN_STREAM
+            _SMOOTH_IN_STREAM = True
+            try:
+                return process_frame(STREAM_SOURCE_FACE, frame)
+            finally:
+                _SMOOTH_IN_STREAM = prev_flag
         return frame
     else:
-        return process_frame_v2(frame)
+        # Streaming context also applies to v2 path
+        prev_flag = _SMOOTH_IN_STREAM
+        _SMOOTH_IN_STREAM = True
+        try:
+            return process_frame_v2(frame)
+        finally:
+            _SMOOTH_IN_STREAM = prev_flag

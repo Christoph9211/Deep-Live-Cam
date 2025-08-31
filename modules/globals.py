@@ -41,3 +41,20 @@ show_mouth_mask_box = False
 mask_feather_ratio = 8
 mask_down_size = 0.50
 mask_size = 1
+
+# Landmark smoothing (One-Euro filter)
+smoothing_enabled = False
+smoothing_stream_only = True
+smoothing_use_fps = True
+smoothing_fps = 30.0
+smoothing_min_cutoff = 1.0
+smoothing_beta = 0.0
+smoothing_dcutoff = 1.0
+smoothing_max_track_age = 30
+
+# Region preservation toggles
+preserve_teeth = False
+preserve_hairline = False
+
+# Semantic segmenter backend selection: 'auto' | 'mediapipe' | 'bisenet'
+segmenter_backend: str = 'auto'

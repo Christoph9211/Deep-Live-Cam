@@ -13,6 +13,11 @@ import shutil
 import argparse
 import torch
 import onnxruntime
+try:
+    # Reduce verbose ORT logs (e.g., feedback manager/info-level messages)
+    onnxruntime.set_default_logger_severity(2)  # 0=VERBOSE,1=INFO,2=WARNING,3=ERROR,4=FATAL
+except Exception:
+    pass
 import tensorflow
 
 import modules.globals
@@ -67,6 +72,18 @@ def parse_args() -> None:
     program.add_argument('--max-memory', help='maximum amount of RAM in GB', dest='max_memory', type=int, default=suggest_max_memory())
     program.add_argument('--execution-provider', help='execution provider', dest='execution_provider', default=['cpu'], choices=suggest_execution_providers(), nargs='+')
     program.add_argument('--execution-threads', help='number of execution threads', dest='execution_threads', type=int, default=suggest_execution_threads())
+    program.add_argument('--segmenter-backend', help='semantic segmenter backend', dest='segmenter_backend', default='auto', choices=['auto', 'mediapipe', 'bisenet'])
+    # Landmark smoothing (One-Euro)
+    program.add_argument('--smoothing', help='enable One-Euro landmark smoothing', dest='smoothing_enabled', action='store_true', default=False)
+    program.add_argument('--smoothing-stream-only', help='apply smoothing only in streaming/live paths', dest='smoothing_stream_only', action='store_true', default=True)
+    program.add_argument('--smoothing-use-fps', help='use fixed FPS for smoothing dt (otherwise use wall time)', dest='smoothing_use_fps', action='store_true', default=True)
+    program.add_argument('--smoothing-fps', help='assumed FPS when --smoothing-use-fps', dest='smoothing_fps', type=float, default=30.0)
+    program.add_argument('--smoothing-min-cutoff', help='One-Euro min cutoff', dest='smoothing_min_cutoff', type=float, default=1.0)
+    program.add_argument('--smoothing-beta', help='One-Euro beta', dest='smoothing_beta', type=float, default=0.0)
+    program.add_argument('--smoothing-dcutoff', help='One-Euro derivative cutoff', dest='smoothing_dcutoff', type=float, default=1.0)
+    # Region preservation toggles
+    program.add_argument('--preserve-teeth', help='preserve original teeth/inner mouth region', dest='preserve_teeth', action='store_true', default=False)
+    program.add_argument('--preserve-hairline', help='preserve original hair/hairline region', dest='preserve_hairline', action='store_true', default=False)
     program.add_argument('-v', '--version', action='version', version=f'{modules.metadata.name} {modules.metadata.version}')
 
     # register deprecated args
@@ -97,6 +114,17 @@ def parse_args() -> None:
     modules.globals.execution_providers = decode_execution_providers(args.execution_provider)
     modules.globals.execution_threads = args.execution_threads
     modules.globals.lang = args.lang
+    modules.globals.segmenter_backend = args.segmenter_backend
+    # Smoothing globals
+    modules.globals.smoothing_enabled = args.smoothing_enabled
+    modules.globals.smoothing_stream_only = args.smoothing_stream_only
+    modules.globals.smoothing_use_fps = args.smoothing_use_fps
+    modules.globals.smoothing_fps = args.smoothing_fps
+    modules.globals.smoothing_min_cutoff = args.smoothing_min_cutoff
+    modules.globals.smoothing_beta = args.smoothing_beta
+    modules.globals.smoothing_dcutoff = args.smoothing_dcutoff
+    modules.globals.preserve_teeth = args.preserve_teeth
+    modules.globals.preserve_hairline = args.preserve_hairline
 
     #for ENHANCER tumbler:
     if 'face_enhancer' in args.frame_processor:
