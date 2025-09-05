@@ -18,6 +18,8 @@ from onnxruntime import (
 _SESSION: Optional[InferenceSession] = None
 _INPUT_NAME: Optional[str] = None
 _INPUT_SHAPE = (512, 512)  # (H, W)
+_CACHE_KEY: Optional[tuple[int, int, int]] = None  # (ptr, w, h)
+_CACHE_MASKS: Optional[Dict[str, np.ndarray]] = None
 
 
 def _models_dir() -> str:
@@ -174,12 +176,20 @@ def get_region_masks(frame: np.ndarray, target_face=None) -> Optional[Dict[str, 
         pass
 
     h, w = frame.shape[:2]
+    # Simple per-frame cache to avoid recomputing segmentation for multiple faces
+    global _CACHE_KEY, _CACHE_MASKS
+    ptr = int(frame.__array_interface__['data'][0])
+    key = (ptr, w, h)
+    if _CACHE_KEY == key and _CACHE_MASKS is not None:
+        return _CACHE_MASKS
     inp = _preprocess_bgr(frame)
     output_names = [_SESSION.get_outputs()[0].name]
     outputs = _SESSION.run(output_names, {_INPUT_NAME: inp})
     logits = outputs[0]
     labelmap = _postprocess_logits(logits, h, w)
-    return _labels_to_masks(labelmap)
+    _CACHE_MASKS = _labels_to_masks(labelmap)
+    _CACHE_KEY = key
+    return _CACHE_MASKS
 
 
 # late import to avoid circular

@@ -119,6 +119,9 @@ def save_switch_states():
         "smoothing_min_cutoff": modules.globals.smoothing_min_cutoff,
         "smoothing_beta": modules.globals.smoothing_beta,
         "smoothing_dcutoff": modules.globals.smoothing_dcutoff,
+        # Occlusion preserve
+        "occlusion_aware_compositing": modules.globals.occlusion_aware_compositing,
+        "occlusion_sensitivity": modules.globals.occlusion_sensitivity,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -158,6 +161,9 @@ def load_switch_states():
         modules.globals.smoothing_min_cutoff = switch_states.get("smoothing_min_cutoff", modules.globals.smoothing_min_cutoff)
         modules.globals.smoothing_beta = switch_states.get("smoothing_beta", modules.globals.smoothing_beta)
         modules.globals.smoothing_dcutoff = switch_states.get("smoothing_dcutoff", modules.globals.smoothing_dcutoff)
+        # Occlusion preserve
+        modules.globals.occlusion_aware_compositing = switch_states.get("occlusion_aware_compositing", modules.globals.occlusion_aware_compositing)
+        modules.globals.occlusion_sensitivity = switch_states.get("occlusion_sensitivity", modules.globals.occlusion_sensitivity)
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
@@ -334,7 +340,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
             save_switch_states(),
         ),
     )
-    mouth_mask_switch.place(relx=0.1, rely=0.55)
+    mouth_mask_switch.place(relx=0.1, rely=0.505)
 
     show_mouth_mask_box_var = ctk.BooleanVar(value=modules.globals.show_mouth_mask_box)
     show_mouth_mask_box_switch = ctk.CTkSwitch(
@@ -347,7 +353,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
             save_switch_states(),
         ),
     )
-    show_mouth_mask_box_switch.place(relx=0.6, rely=0.55)
+    show_mouth_mask_box_switch.place(relx=0.6, rely=0.505)
 
     # --- Mouth Mask Sliders ---
     # Mask Size slider (0.5x - 2.0x)
@@ -355,7 +361,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         root,
         text=f"Mask Size: {modules.globals.mask_size:.2f}x",
     )
-    mask_size_label.place(relx=0.1, rely=0.585)
+    mask_size_label.place(relx=0.1, rely=0.54)
 
     def on_mask_size_change(val: float):
         # Snap to 0.05 steps for stability
@@ -373,14 +379,14 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         width=160,
     )
     mask_size_slider.set(modules.globals.mask_size)
-    mask_size_slider.place(relx=0.28, rely=0.585)
+    mask_size_slider.place(relx=0.28, rely=0.54)
 
     # Feather Ratio slider (2 - 32)
     feather_label = ctk.CTkLabel(
         root,
         text=f"Feather: {int(modules.globals.mask_feather_ratio)}",
     )
-    feather_label.place(relx=0.6, rely=0.585)
+    feather_label.place(relx=0.6, rely=0.54)
 
     def on_feather_change(val: float):
         new_val = max(1, int(round(val)))
@@ -397,7 +403,7 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         width=160,
     )
     feather_slider.set(float(modules.globals.mask_feather_ratio))
-    feather_slider.place(relx=0.78, rely=0.585)
+    feather_slider.place(relx=0.78, rely=0.54)
 
     start_button = ctk.CTkButton(
         root, text=_("Start"), cursor="hand2", command=lambda: analyze_target(start, root)
@@ -515,6 +521,23 @@ def open_advanced_popup(root: ctk.CTk) -> None:
                                 command=lambda: (setattr(modules.globals, "preserve_hairline", hair_var.get()), save_switch_states()))
     hair_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
     row += 1
+
+    # Occlusion preservation
+    occ_var = ctk.BooleanVar(value=modules.globals.occlusion_aware_compositing)
+    occ_switch = ctk.CTkSwitch(frame, text=_("Occlusion Preserve"), variable=occ_var, cursor="hand2",
+                               command=lambda: (setattr(modules.globals, "occlusion_aware_compositing", occ_var.get()), save_switch_states()))
+    occ_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    occ_label = ctk.CTkLabel(frame, text=f"Occlusion Sensitivity: {modules.globals.occlusion_sensitivity:.2f}")
+    occ_label.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    def on_occ_change(val: float):
+        modules.globals.occlusion_sensitivity = float(round(val, 2))
+        occ_label.configure(text=f"Occlusion Sensitivity: {modules.globals.occlusion_sensitivity:.2f}")
+        save_switch_states()
+    occ_slider = ctk.CTkSlider(frame, from_=0.0, to=1.0, number_of_steps=100, command=on_occ_change, width=200)
+    occ_slider.set(float(modules.globals.occlusion_sensitivity))
+    occ_slider.grid(row=row+1, column=1, padx=10, pady=6, sticky="ew")
+    row += 2
 
     # Smoothing toggles
     smoothing_var = ctk.BooleanVar(value=modules.globals.smoothing_enabled)

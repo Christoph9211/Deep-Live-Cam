@@ -221,6 +221,43 @@ def update_status(message: str, scope: str = 'DLC.CORE') -> None:
         ui.update_status(message)
 
 
+def _short_flags() -> str:
+    g = modules.globals
+    flags = []
+    if getattr(g, 'mouth_mask', False):
+        flags.append('MM')
+    if getattr(g, 'preserve_teeth', False):
+        flags.append('TTH')
+    if getattr(g, 'preserve_hairline', False):
+        flags.append('HL')
+    if g.fp_ui.get('face_enhancer', False):
+        flags.append('ENH')
+    if getattr(g, 'map_faces', False):
+        flags.append('MAP')
+    if getattr(g, 'many_faces', False):
+        flags.append('MF')
+    if getattr(g, 'smoothing_enabled', False):
+        flags.append('S')
+    return ','.join(flags) if flags else 'none'
+
+
+def _print_startup_summary() -> None:
+    g = modules.globals
+    parts = [
+        f"Providers={g.execution_providers}",
+        f"Threads={g.execution_threads}",
+        f"RAM={g.max_memory}GB",
+        f"Encoder={g.video_encoder}/CRF={g.video_quality}",
+        f"Segmenter={getattr(g, 'segmenter_backend', 'auto')}",
+        f"Flags=[{_short_flags()}]",
+    ]
+    if getattr(g, 'smoothing_enabled', False):
+        parts.append(
+            f"Smoothing fps={getattr(g,'smoothing_fps',30.0)} mc={getattr(g,'smoothing_min_cutoff',1.0)} beta={getattr(g,'smoothing_beta',0.0)} dc={getattr(g,'smoothing_dcutoff',1.0)}"
+        )
+    update_status(' | '.join(parts))
+
+
 def stream_video() -> None:
     """
     Process a video file using the selected frame processors and save the result to a new file.
@@ -251,7 +288,13 @@ def stream_video() -> None:
 
     progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
     with tqdm(total=total, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-        progress.set_postfix({'execution_providers': modules.globals.execution_providers, 'execution_threads': modules.globals.execution_threads, 'max_memory': modules.globals.max_memory})
+        progress.set_postfix({
+            'providers': modules.globals.execution_providers,
+            'threads': modules.globals.execution_threads,
+            'mem_gb': modules.globals.max_memory,
+            'backend': getattr(modules.globals, 'segmenter_backend', 'auto'),
+            'flags': _short_flags(),
+        })
         while True:
             ret, frame = capture.read()
             if not ret:
@@ -372,7 +415,9 @@ def run() -> None:
             return
     limit_resources()
     if modules.globals.headless:
+        _print_startup_summary()
         start()
     else:
         window = ui.init(start, destroy, modules.globals.lang)
+        _print_startup_summary()
         window.mainloop()

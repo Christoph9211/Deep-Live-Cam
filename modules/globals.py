@@ -58,3 +58,11 @@ preserve_hairline = False
 
 # Semantic segmenter backend selection: 'auto' | 'mediapipe' | 'bisenet'
 segmenter_backend: str = 'auto'
+
+# Occlusion-aware compositing
+# Preserves foreground occluders (e.g., hands, props) by reinstating
+# original pixels where strong edges present in the original are missing
+# in the swapped output. Enabled by default.
+occlusion_aware_compositing = True
+# Sensitivity 0.0 (conservative) .. 1.0 (aggressive)
+occlusion_sensitivity = 0.5

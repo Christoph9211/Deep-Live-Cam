@@ -119,6 +119,93 @@ def _get_single_filters() -> Tuple[_VectorEuro, _VectorEuro]:
     return _SMOOTH_SINGLE
 
 
+def _auto_canny(gray: np.ndarray, sigma: float = 0.33) -> np.ndarray:
+    v = np.median(gray)
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    return cv2.Canny(gray, lower, upper)
+
+
+def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: float = 0.12) -> Tuple[int, int, int, int]:
+    x1, y1, x2, y2 = map(float, bbox)
+    bw = x2 - x1
+    bh = y2 - y1
+    x1 -= bw * pad
+    y1 -= bh * pad
+    x2 += bw * pad
+    y2 += bh * pad
+    xi1 = max(0, int(math.floor(x1)))
+    yi1 = max(0, int(math.floor(y1)))
+    xi2 = min(w, int(math.ceil(x2)))
+    yi2 = min(h, int(math.ceil(y2)))
+    if xi2 <= xi1 or yi2 <= yi1:
+        return 0, 0, w, h
+    return xi1, yi1, xi2, yi2
+
+
+def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:
+    try:
+        h, w = swapped_frame.shape[:2]
+        s = float(getattr(modules.globals, 'occlusion_sensitivity', 0.5) or 0.0)
+        s = 0.0 if s < 0.0 else (1.0 if s > 1.0 else s)
+        sigma = max(0.1, min(0.5, 0.5 - 0.35 * s))
+        k_factor = 0.012 + 0.028 * s
+        b_factor = 0.012 + 0.028 * s
+        pctl = 90.0 - 40.0 * s
+        # Derive ROI from face bbox; fall back to full frame
+        if hasattr(target_face, 'bbox') and target_face.bbox is not None:
+            rx1, ry1, rx2, ry2 = _expand_bbox(tuple(target_face.bbox), w, h, pad=0.12)
+        else:
+            rx1, ry1, rx2, ry2 = 0, 0, w, h
+
+        roi_o = original_frame[ry1:ry2, rx1:rx2]
+        roi_s = swapped_frame[ry1:ry2, rx1:rx2]
+        if roi_o.size == 0 or roi_s.size == 0:
+            return swapped_frame
+
+        # Edge-based occlusion detection: edges in original missing in swapped
+        gray_o = cv2.cvtColor(roi_o, cv2.COLOR_BGR2GRAY)
+        gray_s = cv2.cvtColor(roi_s, cv2.COLOR_BGR2GRAY)
+        # Light denoise to stabilize edges
+        gray_o = cv2.bilateralFilter(gray_o, 5, 75, 75)
+        gray_s = cv2.bilateralFilter(gray_s, 5, 75, 75)
+
+        e_o = _auto_canny(gray_o, sigma=sigma)
+        e_s = _auto_canny(gray_s, sigma=sigma)
+        missing = cv2.subtract(e_o, e_s)  # edges present in original but not in swapped
+
+        # Expand to cover thin fingers/props; kernel scales with ROI size
+        k = max(3, int(k_factor * max(roi_o.shape[0], roi_o.shape[1])))
+        if k % 2 == 0:
+            k += 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        occ = cv2.dilate(missing, kernel)
+
+        # Optional gating by color difference to avoid over-preservation
+        diff = cv2.absdiff(roi_o, roi_s)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        # Normalize and threshold softly
+        thr = max(5, int(np.percentile(diff_gray, pctl)))
+        diff_mask = (diff_gray > thr).astype(np.uint8) * 255
+        occ = cv2.bitwise_and(occ, diff_mask)
+
+        # Soften to alpha matte
+        b = max(3, int(b_factor * max(roi_o.shape[0], roi_o.shape[1])))
+        if b % 2 == 0:
+            b += 1
+        alpha = cv2.GaussianBlur(occ, (b, b), 0).astype(np.float32) / 255.0
+        alpha = np.clip(alpha, 0.0, 1.0)
+        alpha3 = np.repeat(alpha[:, :, None], 3, axis=2)
+
+        blended = (roi_o.astype(np.float32) * alpha3 + roi_s.astype(np.float32) * (1.0 - alpha3))
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+        out = swapped_frame.copy()
+        out[ry1:ry2, rx1:rx2] = blended
+        return out
+    except Exception:
+        return swapped_frame
+
+
 def _smooth_face_inplace(face: Face, dt: float) -> None:
     try:
         kps = getattr(face, 'kps', None)
@@ -381,6 +468,10 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         or getattr(modules.globals, 'preserve_hairline', False)
     ):
         swapped = _apply_mouth_mask(original_frame, swapped, target_face)
+    # Preserve foreground occluders (hands/props) by reinstating
+    # original pixels where strong edges were removed by swapping
+    if getattr(modules.globals, 'occlusion_aware_compositing', True):
+        swapped = _apply_occlusion_preserve(original_frame, swapped, target_face)
     return swapped
 
 

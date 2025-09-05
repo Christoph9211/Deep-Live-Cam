@@ -37,6 +37,8 @@ except Exception:
 
 
 _FACE_MESH = None
+_CACHE_KEY: Optional[tuple[int, int, int]] = None  # (ptr, w, h)
+_CACHE_LANDMARKS = None
 
 
 def _get_face_mesh():
@@ -54,6 +56,26 @@ def _get_face_mesh():
         min_tracking_confidence=0.5,
     )
     return _FACE_MESH
+
+
+def _frame_cache_key(frame: np.ndarray) -> tuple[int, int, int]:
+    h, w = frame.shape[:2]
+    # Use data pointer + dims as a lightweight identity within a frame pass
+    ptr = int(frame.__array_interface__['data'][0])
+    return (ptr, w, h)
+
+
+def _get_mediapipe_landmarks(frame: np.ndarray):
+    global _CACHE_KEY, _CACHE_LANDMARKS
+    key = _frame_cache_key(frame)
+    if _CACHE_KEY == key and _CACHE_LANDMARKS is not None:
+        return _CACHE_LANDMARKS
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    face_mesh = _get_face_mesh()
+    results = face_mesh.process(img_rgb)
+    _CACHE_KEY = key
+    _CACHE_LANDMARKS = results.multi_face_landmarks if results else None
+    return _CACHE_LANDMARKS
 
 
 def _bbox_from_landmarks(landmarks, w: int, h: int) -> Tuple[int, int, int, int]:
@@ -111,20 +133,18 @@ def _get_mouth_mask_mediapipe(frame: np.ndarray, target_face) -> Optional[np.nda
     if mp is None or frame is None or frame.size == 0:
         return None
     h, w = frame.shape[:2]
-    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    face_mesh = _get_face_mesh()
-    results = face_mesh.process(img_rgb)
-    if not results or not results.multi_face_landmarks:
+    results = _get_mediapipe_landmarks(frame)
+    if not results:
         return None
     if hasattr(target_face, 'bbox') and target_face.bbox is not None:
         tx1, ty1, tx2, ty2 = map(float, target_face.bbox)
         target_bbox = (tx1, ty1, tx2, ty2)
     else:
         target_bbox = (0.0, 0.0, float(w), float(h))
-    idx = _select_face(results.multi_face_landmarks, target_bbox, w, h)
+    idx = _select_face(results, target_bbox, w, h)
     if idx < 0:
         return None
-    face_lms = results.multi_face_landmarks[idx]
+    face_lms = results[idx]
     lip_ids = _lip_indices()
     if lip_ids.size == 0:
         return None

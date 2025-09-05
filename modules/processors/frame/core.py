@@ -138,5 +138,29 @@ def process_video(source_path: str, frame_paths: list[str], process_frames: Call
     progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
     total = len(frame_paths)
     with tqdm(total=total, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-        progress.set_postfix({'execution_providers': modules.globals.execution_providers, 'execution_threads': modules.globals.execution_threads, 'max_memory': modules.globals.max_memory})
+        # Build a compact flags string without depending on modules.core to avoid circular imports
+        g = modules.globals
+        flags = []
+        if getattr(g, 'mouth_mask', False):
+            flags.append('MM')
+        if getattr(g, 'preserve_teeth', False):
+            flags.append('TTH')
+        if getattr(g, 'preserve_hairline', False):
+            flags.append('HL')
+        if g.fp_ui.get('face_enhancer', False):
+            flags.append('ENH')
+        if getattr(g, 'map_faces', False):
+            flags.append('MAP')
+        if getattr(g, 'many_faces', False):
+            flags.append('MF')
+        if getattr(g, 'smoothing_enabled', False):
+            flags.append('S')
+        flags_str = ','.join(flags) if flags else 'none'
+        progress.set_postfix({
+            'providers': g.execution_providers,
+            'threads': g.execution_threads,
+            'mem_gb': g.max_memory,
+            'backend': getattr(g, 'segmenter_backend', 'auto'),
+            'flags': flags_str,
+        })
         multi_process_frame(source_path, frame_paths, process_frames, progress, batch_size)
