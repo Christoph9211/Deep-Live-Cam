@@ -12,7 +12,8 @@ Contract:
         Returns an HxW float32 mask in [0, 1], where 1.0 means preserve
         original pixels and 0.0 means use swapped pixels. None on failure.
 """
-
+import modules.globals
+from mediapipe.python.solutions import face_mesh
 from typing import Optional, Tuple
 import numpy as np
 import cv2
@@ -46,15 +47,16 @@ def _get_face_mesh():
     if _FACE_MESH is None:
         if mp is None:
             raise RuntimeError("mediapipe not installed")
-    _FACE_MESH = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=True,
-        # Avoid calculators that require PROJECTION_MATRIX/IMAGE_DIMENSIONS paths
-        # while still providing 468 landmarks sufficient for lips polygon.
-        refine_landmarks=False,
-        max_num_faces=5,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
+        else:
+            _FACE_MESH = face_mesh.FaceMesh(
+                static_image_mode=True,
+                # Avoid calculators that require PROJECTION_MATRIX/IMAGE_DIMENSIONS paths
+                # while still providing 468 landmarks sufficient for lips polygon.
+                refine_landmarks=False,
+                max_num_faces=5,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
     return _FACE_MESH
 
 
@@ -149,18 +151,19 @@ def _get_mouth_mask_mediapipe(frame: np.ndarray, target_face) -> Optional[np.nda
     if lip_ids.size == 0:
         return None
     pts = []
-    lms = face_lms.landmark
     for i in lip_ids:
-        if 0 <= i < len(lms):
-            x = int(round(lms[i].x * w))
-            y = int(round(lms[i].y * h))
-            pts.append([x, y])
+        if 0 <= i < len(face_lms):
+            px = int(round(face_lms[i].x * w))
+            py = int(round(face_lms[i].y * h))
+            if 0 <= px < w and 0 <= py < h:
+                pts.append([px, py])
+
     if len(pts) < 3:
         return None
     pts = np.array(pts, dtype=np.int32)
     hull = cv2.convexHull(pts)
-    mask = np.zeros((h, w), dtype=np.float32)
-    cv2.fillConvexPoly(mask, hull, 1.0)
+    mask = np.ones((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, hull, (0, 0, 0), lineType=cv2.LINE_AA)
     k = max(3, int(max(w, h) * 0.01))
     if k % 2 == 0:
         k += 1

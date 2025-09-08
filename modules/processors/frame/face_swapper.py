@@ -143,7 +143,7 @@ def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: f
     return xi1, yi1, xi2, yi2
 
 
-def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:
+def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
     try:
         h, w = swapped_frame.shape[:2]
         s = float(getattr(modules.globals, 'occlusion_sensitivity', 0.5) or 0.0)
@@ -206,7 +206,7 @@ def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, targe
         return swapped_frame
 
 
-def _smooth_face_inplace(face: Face, dt: float) -> None:
+def _smooth_face_inplace(face: Face, dt: float) -> None: # type: ignore
     try:
         kps = getattr(face, 'kps', None)
         bbox = getattr(face, 'bbox', None)
@@ -238,15 +238,24 @@ def pre_check() -> bool:
 
 def pre_start() -> bool:
     # --- No changes needed in pre_start ---
-    if not modules.globals.map_faces and not is_image(modules.globals.source_path):
-        update_status('Select an image for source path.', NAME)
+    if not modules.globals.source_path or not modules.globals.target_path:
+        update_status('Source and target paths must be set.', NAME)
         return False
-    elif not modules.globals.map_faces and not get_one_face(cv2.imread(modules.globals.source_path)):
-        update_status('No face in source path detected.', NAME)
+    if not is_image(modules.globals.source_path) and not is_video(modules.globals.source_path):
+        update_status('Source path must be an image or video.', NAME)
         return False
     if not is_image(modules.globals.target_path) and not is_video(modules.globals.target_path):
-        update_status('Select an image or video for target path.', NAME)
+        update_status('Target path must be an image or video.', NAME)
         return False
+    if not modules.globals.map_faces:
+        source_img = cv2.imread(modules.globals.source_path)
+        if source_img is None:
+            update_status(f"Error: Could not read source image: {modules.globals.source_path}", NAME)
+            return False
+        source_face = get_one_face(source_img)
+        if source_face is None:
+            update_status(f"No face in source path detected: {modules.globals.source_path}", NAME)
+            return False
     return True
 
 
@@ -287,7 +296,7 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:
+def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
     """Blend original mouth region back using semantic parsing when available.
 
     Strategy:
@@ -408,7 +417,7 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
         cy_ds = int(round(cy * down))
         ax_ds = max(1, int(round(ax * down)))
         ay_ds = max(1, int(round(ay * down)))
-        cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, 1.0, -1)
+        cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, (255, 255, 255), -1)
 
         feather = max(1, int(max(ax_ds, ay_ds) / max(feather_ratio, 1.0)))
         if feather % 2 == 0:
@@ -503,11 +512,11 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
     # (Assuming swap_face handles the potential None return from get_face_swapper)
     """
     Process a frame (image or video) by replacing the detected face(s) with the target face(s) as specified in the source-target map.
-    
+
     Args:
         temp_frame (Frame): The frame in which the replacement will take place.
         temp_frame_path (str): The path of the frame being processed, required for video processing.
-    
+
     Returns:
         Frame: The frame with the replaced face(s).
     """
@@ -516,14 +525,16 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
             source_face = default_source_face()
             for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
                 target_face = map_entry['target']['face']
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+                if target_face is not None:
+                    temp_frame = swap_face(source_face, target_face, temp_frame)
 
         elif not modules.globals.many_faces:
             for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
                 if "source" in map_entry:
                     source_face = map_entry['source']['face']
                     target_face = map_entry['target']['face']
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+                    if source_face is not None and target_face is not None:
+                        temp_frame = swap_face(source_face, target_face, temp_frame)
 
     elif is_video(modules.globals.target_path):
         if modules.globals.many_faces:
@@ -532,8 +543,10 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                 target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
 
                 for frame in target_frame:
-                    for target_face in frame['faces']:
-                        temp_frame = swap_face(source_face, target_face, temp_frame)
+                    if frame is not None:
+                        for target_face in frame['faces']:
+                            if target_face is not None:
+                                temp_frame = swap_face(source_face, target_face, temp_frame)
 
         elif not modules.globals.many_faces:
             for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
@@ -542,31 +555,36 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                     source_face = map_entry['source']['face']
 
                     for frame in target_frame:
-                        for target_face in frame['faces']:
-                            temp_frame = swap_face(source_face, target_face, temp_frame)
+                        if frame is not None:
+                            for target_face in frame['faces']:
+                                if target_face is not None:
+                                    temp_frame = swap_face(source_face, target_face, temp_frame)
     else: # Fallback for neither image nor video (e.g., live feed?)
         detected_faces = get_many_faces(temp_frame)
         if modules.globals.many_faces:
-            if detected_faces:
+            if detected_faces is not None:
                 source_face = default_source_face()
                 for target_face in detected_faces:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+                    if target_face is not None:
+                        temp_frame = swap_face(source_face, target_face, temp_frame)
 
         elif not modules.globals.many_faces:
-            if detected_faces and hasattr(modules.globals, 'simple_map') and modules.globals.simple_map: # Check simple_map exists
-                if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
-                    for detected_face in detected_faces:
-                        closest_centroid_index, _ = find_closest_centroid(modules.globals.simple_map['target_embeddings'], detected_face.normed_embedding)
-                        temp_frame = swap_face(modules.globals.simple_map['source_faces'][closest_centroid_index], detected_face, temp_frame)
-                else:
-                    detected_faces_centroids = [face.normed_embedding for face in detected_faces]
-                    i = 0
-                    for target_embedding in modules.globals.simple_map['target_embeddings']:
-                        closest_centroid_index, _ = find_closest_centroid(detected_faces_centroids, target_embedding)
-                        # Ensure index is valid before accessing detected_faces
-                        if closest_centroid_index < len(detected_faces):
-                            temp_frame = swap_face(modules.globals.simple_map['source_faces'][i], detected_faces[closest_centroid_index], temp_frame)
-                        i += 1
+            if detected_faces is not None:
+                if hasattr(modules.globals, 'simple_map') and modules.globals.simple_map: # Check simple_map exists
+                    if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
+                        for detected_face in detected_faces:
+                            if detected_face is not None:
+                                closest_centroid_index, _ = find_closest_centroid(modules.globals.simple_map['target_embeddings'], detected_face.normed_embedding)
+                                temp_frame = swap_face(modules.globals.simple_map['source_faces'][closest_centroid_index], detected_face, temp_frame)
+                    else:
+                        detected_faces_centroids = [face.normed_embedding for face in detected_faces]
+                        i = 0
+                        for target_embedding in modules.globals.simple_map['target_embeddings']:
+                            closest_centroid_index, _ = find_closest_centroid(detected_faces_centroids, target_embedding)
+                            # Ensure index is valid before accessing detected_faces
+                            if closest_centroid_index < len(detected_faces):
+                                temp_frame = swap_face(modules.globals.simple_map['source_faces'][i], detected_faces[closest_centroid_index], temp_frame)
+                            i += 1
     return temp_frame
 
 
