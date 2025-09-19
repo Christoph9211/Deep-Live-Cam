@@ -5,12 +5,14 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
 Project: Deep-Live-Cam (GUI and CLI for face swap/enhance on images, videos, and live camera)
 
 Prerequisites and setup
+
 - Python 3.9+ (the app checks and requires >= 3.9)
 - FFmpeg installed and on PATH (ffmpeg/ffprobe used for decoding/encoding)
 - Conda environment (recommended). On this machine the environment is typically named dlcam. The user’s curated rule indicates a Linux path at /home/christoph92/miniconda/envs/dlcam; on Windows, just activate the dlcam environment by name.
 - GPUs optional. ONNX Runtime providers supported include cpu, cuda (NVIDIA), dml (Windows DirectML), rocm (AMD), coreml (macOS). Choose with --execution-provider.
 
 Setup commands (PowerShell)
+
 - Create/activate env and install dependencies:
   - conda create -y -n dlcam python=3.10
   - conda activate dlcam
@@ -18,6 +20,7 @@ Setup commands (PowerShell)
   - Optional (needed for face mapping features and dev tooling): pip install scikit-learn pre-commit
 
 Common commands
+
 - Run GUI (recommended for interactive use):
   - python run.py
 - Run headless face swap (image -> image):
@@ -39,11 +42,13 @@ Common commands
   - --mouth-mask, --preserve-teeth, --preserve-hairline to selectively preserve regions during compositing
 
 Linting
+
 - Install and run pre-commit hooks:
   - pre-commit install
   - pre-commit run --all-files
 
 High-level architecture
+
 - Entry point: run.py → modules/core.py
   - Parses CLI, sets global runtime config (modules/globals.py), validates environment (Python ≥3.9, ffmpeg available), chooses ONNX Runtime providers, and orchestrates processing.
   - Headless mode runs directly; otherwise launches the CustomTkinter UI (modules/ui.py).
@@ -70,6 +75,7 @@ High-level architecture
     - modules/predicter.py using opennsfw2 and TensorFlow; enabled via --nsfw-filter.
 
 Models and assets
+
 - Models are expected under modules/models (auto-downloaded where possible):
   - GFPGANv1.4.pth is auto-downloaded on first run of face_enhancer.
   - InSwapper ONNX: inswapper_128.onnx (preferred) or inswapper_128_fp16.onnx. If neither exists, face swapper will error and print a clear status message. Place either file in modules/models.
@@ -78,10 +84,12 @@ Models and assets
     - DLC_BISENET_ONNX_URL: URL to download if not present
 
 Operational notes
-- Temporary work area: For videos, frames are extracted to temp/<target_basename>. Use --keep-frames to retain; otherwise they are removed after processing. Outputs are written next to the target when appropriate; if you pass a directory as -o/--output, naming is normalized as <source>-<target>.<ext>.
+
+- Temporary work area: For videos, frames are extracted to temp/<target_basename>. Use --keep-frames to retain; otherwise they are removed after processing. Outputs are written next to the target when appropriate; if you pass a directory as -o/--output
 - Performance: Control threading with --execution-threads. Provider selection heavily influences speed: prefer cuda on NVIDIA, dml on Windows for broad GPU support, cpu as fallback.
 - Live camera: Start the GUI (python run.py), choose a camera from the dropdown, and click Live. Use UI toggles for mirror/resize and processor enabling (face enhancer switch).
 
 What’s not present
+
 - No build/package step (this is a Python application run directly from sources).
 - No test suite exists in the repo at this time.
