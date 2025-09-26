@@ -41,6 +41,14 @@ NAME = 'DLC.FACE-SWAPPER'
 
 class _LowPass:
     def __init__(self, alpha: float, init: Optional[float] = None):
+        """
+        Initializes a _LowPass object.
+
+        Args:
+            alpha (float): The alpha value for the One-Euro filter.
+            init (Optional[float], optional): The initial value for the filter.
+                Defaults to None.
+        """
         self.alpha = alpha
         self.s: Optional[float] = init
 
@@ -259,6 +267,76 @@ def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: f
         return 0, 0, w, h
     return xi1, yi1, xi2, yi2
 
+def new_face_mask(
+    roi_shape: Tuple[int, int],
+    face: Optional["Face"] = None,
+    offset_x: int = 0,
+    offset_y: int = 0,
+    feather_frac: float = 0.6,
+    ax_scale: float = 0.60,
+    ay_scale: float = 1.05,
+) -> np.ndarray:
+    """
+    Landmark/bbox-aware soft mask. Falls back to centered ellipse.
+    - feather_frac: Gaussian kernel as fraction of max(ax, ay)
+    - ax/ay_scale: ellipse axis scales from landmark/bbox extents
+    """
+    h, w = roi_shape
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    # Default ellipse (fallback)
+    cx, cy = w * 0.5, h * 0.5
+    ax, ay, angle = w * 0.5, h * 0.5, 0.0
+
+    if face is not None:
+        try:
+            kps = getattr(face, "kps", None)
+            if kps is not None:
+                pts = np.asarray(kps, dtype=np.float32)
+                xs = pts[:, 0] - float(offset_x)
+                ys = pts[:, 1] - float(offset_y)
+                if xs.size >= 2 and ys.size >= 2:
+                    cx = float(xs.mean())
+                    cy = float(ys.mean())
+                    ax = max(1.0, (xs.max() - xs.min()) * ax_scale)
+                    ay = max(1.0, (ys.max() - ys.min()) * ay_scale)
+
+                    # Estimate in-plane rotation from eye line if available
+                    # common 5-pt format: [l_eye, r_eye, nose, l_mouth, r_mouth]
+                    if pts.shape[0] >= 2:
+                        lx, ly = pts[0, 0] - offset_x, pts[0, 1] - offset_y
+                        rx, ry = pts[1, 0] - offset_x, pts[1, 1] - offset_y
+                        angle = np.degrees(np.arctan2(ry - ly, rx - lx))
+            if float(mask.sum()) < 1.0 and getattr(face, "bbox", None) is not None:
+                x1, y1, x2, y2 = map(float, face.bbox)
+                cx = (x1 + x2) / 2.0 - float(offset_x)
+                cy = (y1 + y2) / 2.0 - float(offset_y)
+                ax = max(1.0, (x2 - x1) * 0.55)
+                ay = max(1.0, (y2 - y1) * 0.75)
+                angle = 0.0
+        except Exception:
+            pass
+
+    # Draw filled, possibly rotated ellipse
+    cv2.ellipse(
+        mask,
+        (int(round(cx)), int(round(cy))),
+        (int(round(ax)), int(round(ay))),
+        float(angle),
+        0, 360, 1.0, -1
+    )
+
+    # Feather + normalize
+    k = max(3, int(round(max(ax, ay) * feather_frac)))
+    if k % 2 == 0:
+        k += 1
+    k = min(k, h if h % 2 == 1 else h - 1, w if w % 2 == 1 else w - 1)
+    if k >= 3:
+        mask = cv2.GaussianBlur(mask, (k, k), 0)
+    m = mask.max()
+    if m > 0:
+        mask /= m
+    return mask
 
 def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
     """
