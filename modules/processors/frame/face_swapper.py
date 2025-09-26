@@ -267,6 +267,155 @@ def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: f
         return 0, 0, w, h
     return xi1, yi1, xi2, yi2
 
+def _face_color_mask(
+    roi_shape: Tuple[int, int],
+    face: Optional["Face"] = None,
+    offset_x: int = 0,
+    offset_y: int = 0,
+    feather_frac: float = 0.6,
+    ax_scale: float = 0.60,
+    ay_scale: float = 1.05,
+) -> np.ndarray:
+    """
+    Landmark/bbox-aware soft mask. Falls back to centered ellipse.
+    - feather_frac: Gaussian kernel as fraction of max(ax, ay)
+    - ax/ay_scale: ellipse axis scales from landmark/bbox extents
+    """
+    h, w = roi_shape
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    # Default ellipse (fallback)
+    cx, cy = w * 0.5, h * 0.5
+    ax, ay, angle = w * 0.5, h * 0.5, 0.0
+
+    if face is not None:
+        try:
+            kps = getattr(face, "kps", None)
+            if kps is not None:
+                pts = np.asarray(kps, dtype=np.float32)
+                xs = pts[:, 0] - float(offset_x)
+                ys = pts[:, 1] - float(offset_y)
+                if xs.size >= 2 and ys.size >= 2:
+                    cx = float(xs.mean())
+                    cy = float(ys.mean())
+                    ax = max(1.0, (xs.max() - xs.min()) * ax_scale)
+                    ay = max(1.0, (ys.max() - ys.min()) * ay_scale)
+
+                    # Estimate in-plane rotation from eye line if available
+                    # common 5-pt format: [l_eye, r_eye, nose, l_mouth, r_mouth]
+                    if pts.shape[0] >= 2:
+                        lx, ly = pts[0, 0] - offset_x, pts[0, 1] - offset_y
+                        rx, ry = pts[1, 0] - offset_x, pts[1, 1] - offset_y
+                        angle = np.degrees(np.arctan2(ry - ly, rx - lx))
+            if float(mask.sum()) < 1.0 and getattr(face, "bbox", None) is not None:
+                x1, y1, x2, y2 = map(float, face.bbox)
+                cx = (x1 + x2) / 2.0 - float(offset_x)
+                cy = (y1 + y2) / 2.0 - float(offset_y)
+                ax = max(1.0, (x2 - x1) * 0.55)
+                ay = max(1.0, (y2 - y1) * 0.75)
+                angle = 0.0
+        except Exception:
+            pass
+
+    # Draw filled, possibly rotated ellipse
+    cv2.ellipse(
+        mask,
+        (int(round(cx)), int(round(cy))),
+        (int(round(ax)), int(round(ay))),
+        float(angle),
+        0, 360, 1.0, -1
+    )
+
+    # Feather + normalize
+    k = max(3, int(round(max(ax, ay) * feather_frac)))
+    if k % 2 == 0:
+        k += 1
+    k = min(k, h if h % 2 == 1 else h - 1, w if w % 2 == 1 else w - 1)
+    if k >= 3:
+        mask = cv2.GaussianBlur(mask, (k, k), 0)
+    m = mask.max()
+    if m > 0:
+        mask /= m
+    return mask
+
+def _apply_histogram_color_correction(
+    original_frame: Frame, swapped_frame: Frame, target_face: Face
+) -> Frame:  # type: ignore
+    """Match swapped face colors to the target skin tone using LAB statistics."""
+
+    try:
+        h, w = swapped_frame.shape[:2]
+        bbox = getattr(target_face, 'bbox', None)
+        if bbox is None:
+            return swapped_frame
+
+        rx1, ry1, rx2, ry2 = _expand_bbox(tuple(bbox), w, h, pad=0.08)
+        roi_o = original_frame[ry1:ry2, rx1:rx2]
+        roi_s = swapped_frame[ry1:ry2, rx1:rx2]
+        if roi_o.size == 0 or roi_s.size == 0:
+            return swapped_frame
+
+        mask = _face_color_mask(target_face, roi_s.shape[:2], rx1, ry1)
+        mask = np.clip(mask, 0.0, 1.0)
+        valid = mask > 0.2
+        if not np.any(valid):
+            return swapped_frame
+
+        roi_o_lab = cv2.cvtColor(roi_o, cv2.COLOR_BGR2LAB).astype(np.float32)
+        roi_s_lab = cv2.cvtColor(roi_s, cv2.COLOR_BGR2LAB).astype(np.float32)
+
+        for c in range(3):
+            channel = roi_s_lab[:, :, c]
+            src_vals = channel[valid]
+            tgt_vals = roi_o_lab[:, :, c][valid]
+            if src_vals.size < 16 or tgt_vals.size < 16:
+                continue
+            src_lo, src_hi = np.percentile(src_vals, (5.0, 95.0))
+            tgt_lo, tgt_hi = np.percentile(tgt_vals, (5.0, 95.0))
+            src_core = src_vals[(src_vals >= src_lo) & (src_vals <= src_hi)]
+            tgt_core = tgt_vals[(tgt_vals >= tgt_lo) & (tgt_vals <= tgt_hi)]
+            if src_core.size < 8:
+                src_core = src_vals
+            if tgt_core.size < 8:
+                tgt_core = tgt_vals
+            src_mean = float(src_core.mean())
+            src_std = float(src_core.std())
+            tgt_mean = float(tgt_core.mean())
+            tgt_std = float(tgt_core.std())
+            if src_std < 1e-5:
+                src_std = 1.0
+            scale = tgt_std / src_std if src_std > 1e-5 else 1.0
+            corrected_vals = (channel[valid] - src_mean) * scale + tgt_mean
+            channel[valid] = corrected_vals
+
+        # Gentle CLAHE on luminance for local contrast adaptation (masked)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_channel = np.clip(roi_s_lab[:, :, 0], 0, 255).astype(np.uint8)
+        l_equalized = clahe.apply(l_channel).astype(np.float32)
+        roi_s_lab[:, :, 0][valid] = l_equalized[valid]
+
+        corrected_roi = cv2.cvtColor(np.clip(roi_s_lab, 0, 255).astype(np.uint8), cv2.COLOR_Lab2BGR)
+
+        sigma = max(1.0, max(mask.shape) * 0.05)
+        alpha = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigmaX=sigma)
+        alpha_max = float(alpha.max())
+        if alpha_max > 0.0:
+            alpha /= alpha_max
+        else:
+            alpha = np.zeros_like(alpha)
+        alpha = np.clip(alpha, 0.0, 1.0)
+
+        mask3 = np.repeat(alpha[:, :, None], 3, axis=2)
+        blended_roi = (
+            corrected_roi.astype(np.float32) * mask3 + roi_s.astype(np.float32) * (1.0 - mask3)
+        )
+        blended_roi = np.clip(blended_roi, 0, 255).astype(np.uint8)
+
+        output = swapped_frame.copy()
+        output[ry1:ry2, rx1:rx2] = blended_roi
+        return output
+    except Exception:
+        return swapped_frame
 
 def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
     """
@@ -633,6 +782,9 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
             _smooth_face_inplace(target_face, _smoothing_dt())
 
     swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    
+    if getattr(modules.globals, 'color_correction', False):
+        swapped = _apply_histogram_color_correction(original_frame, swapped, target_face)
 
     # Apply region preservation if any toggle is enabled
     if (
