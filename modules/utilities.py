@@ -117,6 +117,7 @@ def detect_fps(target_path: str) -> float:
 
 def extract_frames(target_path: str) -> None:
     temp_directory_path = get_temp_directory_path(target_path)
+    Path(temp_directory_path).mkdir(parents=True, exist_ok=True)
     run_ffmpeg(
         [
             "-i",
@@ -175,7 +176,11 @@ def restore_audio(target_path: str, output_path: str) -> None:
 
 def get_temp_frame_paths(target_path: str) -> List[str]:
     temp_directory_path = get_temp_directory_path(target_path)
-    return glob.glob((os.path.join(glob.escape(temp_directory_path), "*.png")))
+    if not os.path.isdir(temp_directory_path):
+        return []
+    return sorted(
+        glob.glob((os.path.join(glob.escape(temp_directory_path), "*.png")))
+    )
 
 
 def get_temp_directory_path(target_path: str) -> str:
