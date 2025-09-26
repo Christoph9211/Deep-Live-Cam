@@ -972,6 +972,19 @@ def select_target_path() -> None:
 
 
 def select_output_path(start: Callable[[], None]) -> None:
+    """
+    Opens a file dialog to select an output path for the processed image or video.
+
+    If the target path is an image, the file dialog will default to saving a PNG image.
+    If the target path is a video, the file dialog will default to saving an MP4 video.
+
+    If the user selects an output path, it will be saved to the modules.globals.output_path variable and the RECENT_DIRECTORY_OUTPUT variable will be updated to the directory of the selected output path.
+
+    Finally, the start function will be called to start the processing of the image or video.
+
+    :param start: Callable to start the processing of the image or video
+    :return: None
+    """
     global RECENT_DIRECTORY_OUTPUT, img_ft, vid_ft
 
     if is_image(modules.globals.target_path):
@@ -1059,6 +1072,16 @@ def fit_image_to_size(image, width: int, height: int):
 
 
 def render_image_preview(image_path: str, size: Tuple[int, int]) -> ctk.CTkImage:
+    """
+    Renders a Tkinter image from the given image path and resizes it to the given size if specified.
+
+    Args:
+        image_path (str): The path to the image to render.
+        size (Tuple[int, int]): The desired size of the rendered image. If None or <= (0, 0), the original image size is used.
+
+    Returns:
+        ctk.CTkImage: The rendered image.
+    """
     image = Image.open(image_path)
     if size:
         image = ImageOps.fit(image, size, Image.LANCZOS)
