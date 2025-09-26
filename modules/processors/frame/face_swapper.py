@@ -703,6 +703,9 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
             _smooth_face_inplace(target_face, _smoothing_dt())
 
     swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    
+    if getattr(modules.globals, 'color_correction', False):
+        swapped = _apply_histogram_color_correction(original_frame, swapped, target_face)
 
     # Apply region preservation if any toggle is enabled
     if (
