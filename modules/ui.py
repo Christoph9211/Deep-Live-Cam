@@ -365,6 +365,13 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
 
     def on_mask_size_change(val: float):
         # Snap to 0.05 steps for stability
+        """
+        Snap the mask size to the nearest 0.05 step for stability.
+
+        Args:
+            val (float): The new mask size value from the slider.
+
+        """
         snapped = round(float(val) / 0.05) * 0.05
         modules.globals.mask_size = float(snapped)
         mask_size_label.configure(text=f"Mask Size: {modules.globals.mask_size:.2f}x")
@@ -389,6 +396,14 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     feather_label.place(relx=0.6, rely=0.54)
 
     def on_feather_change(val: float):
+        """
+        Snap the feather ratio to the nearest integer for stability.
+
+        Args:
+            val (float): The new feather ratio value from the slider.
+
+        """
+
         new_val = max(1, int(round(val)))
         modules.globals.mask_feather_ratio = int(new_val)
         feather_label.configure(text=f"Feather: {modules.globals.mask_feather_ratio}")
@@ -487,6 +502,16 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     return root
 
 def open_advanced_popup(root: ctk.CTk) -> None:
+    """
+    Opens the advanced settings popup window.
+
+    This window contains various advanced settings for the program, such as the segmenter backend, preservation toggles, occlusion preservation, smoothing toggles, and other miscellaneous settings.
+
+    The window is designed to be scrollable, allowing the user to access all the settings even if the window is too small to display all of them at once.
+
+    The window is closed by clicking the "Close" button.
+
+    """
     global POPUP_ADV
     if POPUP_ADV and POPUP_ADV.winfo_exists():
         POPUP_ADV.focus()
@@ -656,6 +681,18 @@ def analyze_target(start: Callable[[], None], root: ctk.CTk):
 def create_source_target_popup(
         start: Callable[[], None], root: ctk.CTk, map: list
 ) -> None:
+    """
+    Create a pop-up to select source faces for face swapping.
+
+    This function creates a pop-up window with the source-target map
+    and buttons to select source faces. If the user selects a source
+    face for each target face, the pop-up will close and the
+    select_output_path function will be called to select the output path.
+
+    :param start: Callable to start the face swapping
+    :param root: The root widget of the main window
+    :param map: The source-target map to display in the pop-up
+    """
     global POPUP, popup_status_label
 
     POPUP = ctk.CTkToplevel(root)
@@ -676,6 +713,13 @@ def create_source_target_popup(
     scrollable_frame.grid(row=0, column=0, padx=0, pady=0, sticky="nsew")
 
     def on_button_click(map, button_num):
+        """
+        Updates the source-target map when a source face button is clicked.
+
+        :param map: The source-target map to update
+        :param button_num: The id of the button that was clicked
+        :return: The updated source-target map
+        """
         map = update_popup_source(scrollable_frame, map, button_num)
 
     for item in map:
@@ -725,6 +769,17 @@ def create_source_target_popup(
 def update_popup_source(
         scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
+    """
+    Updates the source image and face in the source-target map for the given button number.
+
+    Args:
+        scrollable_frame (ctk.CTkScrollableFrame): The frame to display the source image.
+        map (list): The source-target map.
+        button_num (int): The button number to update.
+
+    Returns:
+        list: The updated source-target map.
+    """
     global source_label_dict
 
     source_path = ctk.filedialog.askopenfilename(
@@ -812,7 +867,7 @@ def update_tumbler(var: str, value: bool) -> None:
     Update the fp_ui dictionary with the given variable and value, and save the state.
     If a live preview is currently running, update the frame processors accordingly.
     """
-    
+
     modules.globals.fp_ui[var] = value
     save_switch_states()
     # If we're currently in a live preview, update the frame processors
@@ -824,6 +879,15 @@ def update_tumbler(var: str, value: bool) -> None:
 
 
 def select_source_path() -> None:
+    """
+    Opens a file dialog to select an image as the source path.
+
+    If an image is selected, it will be rendered in the source label and the RECENT_DIRECTORY_SOURCE variable will be updated to the directory of the selected image.
+
+    If no image is selected, the source path will be set to None and the source label will be cleared.
+
+    :return: None
+    """
     global RECENT_DIRECTORY_SOURCE, img_ft, vid_ft
 
     PREVIEW.withdraw()
@@ -883,7 +947,7 @@ def select_target_path() -> None:
 
     If the user cancels the file dialog, the target path is set to None and the target image preview is cleared.
     """
-    
+
     global RECENT_DIRECTORY_TARGET, img_ft, vid_ft
 
     PREVIEW.withdraw()
@@ -935,7 +999,7 @@ def select_output_path(start: Callable[[], None]) -> None:
 
 
 def check_and_ignore_nsfw(target, destroy: Callable = None) -> bool:
-  
+
     """
     Check if the target is NSFW content and ignore the processing if it is.
 
@@ -985,7 +1049,7 @@ def fit_image_to_size(image, width: int, height: int):
     ratio_h = height / h
     # Use the smaller ratio to ensure the image fits within the given dimensions
     ratio = min(ratio_w, ratio_h)
-    
+
     # Compute new dimensions, ensuring they're at least 1 pixel
     new_width = max(1, int(ratio * w))
     new_height = max(1, int(ratio * h))
@@ -1048,17 +1112,28 @@ def init_preview() -> None:
 
 
 def update_preview(frame_number: int = 0) -> None:
+    """
+    Update the preview image based on the current frame number.
+
+    Args:
+        frame_number: The frame number to render. Defaults to 0.
+
+    Returns:
+        None
+    """
     if modules.globals.source_path and modules.globals.target_path:
         update_status("Processing...")
         temp_frame = get_video_frame(modules.globals.target_path, frame_number)
         if modules.globals.nsfw_filter and check_and_ignore_nsfw(temp_frame):
             return
+
         for frame_processor in get_frame_processors_modules(
                 modules.globals.frame_processors
         ):
             temp_frame = frame_processor.process_frame(
                 get_one_face(cv2.imread(modules.globals.source_path)), temp_frame
             )
+
         image = Image.fromarray(cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB))
         image = ImageOps.contain(
             image, (PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT), Image.LANCZOS
@@ -1297,6 +1372,13 @@ def create_source_target_popup_for_webcam(
 
 
 def clear_source_target_images(map: list):
+
+
+    """
+    Clears the source-target map by deleting the "source" and "target" keys in each item, and then destroys and deletes the corresponding labels in the source_label_dict_live and target_label_dict_live dictionaries.
+
+    This function is used to reset the state of the source-target map and the live preview labels when the user clears the map or submits it.
+    """
     global source_label_dict_live, target_label_dict_live
 
     for item in map:
@@ -1315,6 +1397,17 @@ def clear_source_target_images(map: list):
 
 
 def refresh_data(map: list):
+    """
+    Refreshes the live preview window by destroying and re-creating all the labels and buttons based on the current state of the map.
+
+    This function is used to update the live preview window when the user adds, removes, or edits mappings in the source-target map.
+
+    Parameters:
+    map (list): A list of dictionaries containing the source-target map. Each item in the list represents a single mapping, and contains the keys "id", "source", and "target". The "source" and "target" keys contain dictionaries with the keys "cv2" and "path", which contain the OpenCV image and the path to the image file, respectively.
+
+    Returns:
+    None
+    """
     global POPUP_LIVE
 
     scrollable_frame = ctk.CTkScrollableFrame(

@@ -61,6 +61,12 @@ def _get_face_mesh():
 
 
 def _frame_cache_key(frame: np.ndarray) -> tuple[int, int, int]:
+    """
+    Returns a tuple of (data pointer, width, height) for a given frame.
+
+    This is used as a lightweight identity within a frame pass, as the data pointer
+    and shape of the frame are unlikely to change between calls.
+    """
     h, w = frame.shape[:2]
     # Use data pointer + dims as a lightweight identity within a frame pass
     ptr = int(frame.__array_interface__['data'][0])
@@ -68,6 +74,22 @@ def _frame_cache_key(frame: np.ndarray) -> tuple[int, int, int]:
 
 
 def _get_mediapipe_landmarks(frame: np.ndarray):
+    """
+    Returns Mediapipe landmarks for a given frame using FaceMesh.
+
+    Uses a simple cache to avoid recomputation of landmarks for the same frame.
+
+    Parameters
+    ----------
+    frame : np.ndarray
+        Input frame (BGR)
+
+    Returns
+    -------
+    list
+        List of detected landmarks for each face (or None if no faces are detected)
+    """
+
     global _CACHE_KEY, _CACHE_LANDMARKS
     key = _frame_cache_key(frame)
     if _CACHE_KEY == key and _CACHE_LANDMARKS is not None:
@@ -81,6 +103,23 @@ def _get_mediapipe_landmarks(frame: np.ndarray):
 
 
 def _bbox_from_landmarks(landmarks, w: int, h: int) -> Tuple[int, int, int, int]:
+    """
+    Compute a bounding box from a list of landmarks.
+
+    Parameters
+    ----------
+    landmarks : list
+        List of detected landmarks for a face
+    w : int
+        Width of the frame
+    h : int
+        Height of the frame
+
+    Returns
+    -------
+    tuple
+        Bounding box coordinates (x1, y1, x2, y2)
+    """
     xs = [int(l.x * w) for l in landmarks]
     ys = [int(l.y * h) for l in landmarks]
     x1, x2 = max(0, min(xs)), min(w - 1, max(xs))
@@ -89,6 +128,22 @@ def _bbox_from_landmarks(landmarks, w: int, h: int) -> Tuple[int, int, int, int]
 
 
 def _iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    """
+    Compute the intersection over union (IoU) of two bounding boxes.
+
+    Parameters
+    ----------
+    a : tuple
+        First bounding box coordinates (x1, y1, x2, y2)
+    b : tuple
+        Second bounding box coordinates (x1, y1, x2, y2)
+
+    Returns
+    -------
+    float
+        IoU value in range [0.0, 1.0]
+    """
+
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     inter_x1 = max(ax1, bx1)
@@ -105,6 +160,25 @@ def _iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, flo
 
 
 def _select_face(result_faces, target_bbox: Tuple[float, float, float, float], w: int, h: int):
+    """
+    Select the face with the highest IoU from the list of result faces
+
+    Parameters
+    ----------
+    result_faces : List[Face]
+        List of faces to select from
+    target_bbox : Tuple[float, float, float, float]
+        Bounding box of the target face
+    w : int
+        Width of the frame
+    h : int
+        Height of the frame
+
+    Returns
+    -------
+    int
+        Index of the selected face, or -1 if no face is selected, or 0 if result_faces is empty
+    """
     best_idx = -1
     best_iou = 0.0
     tbox = target_bbox
@@ -119,8 +193,16 @@ def _select_face(result_faces, target_bbox: Tuple[float, float, float, float], w
 
 
 def _lip_indices() -> np.ndarray:
-    # Collect vertices from FACEMESH_LIPS connections; then take convex hull.
-    # This avoids hardcoding raw landmark indices.
+    """
+    Returns a numpy array of indices of face mesh points that form lip connections.
+
+    The returned array is empty if the "FACEMESH_LIPS" attribute is not present in the mediapipe FaceMesh module.
+
+    The indices are sorted in ascending order.
+
+    :return: A numpy array of dtype int32, containing the indices of face mesh points that form lip connections.
+    :rtype: numpy.ndarray
+    """
     lips = getattr(mp.solutions.face_mesh, "FACEMESH_LIPS", None)  # type: ignore[attr-defined]
     if lips is None:
         return np.array([], dtype=np.int32)
@@ -132,6 +214,20 @@ def _lip_indices() -> np.ndarray:
 
 
 def _get_mouth_mask_mediapipe(frame: np.ndarray, target_face) -> Optional[np.ndarray]:
+    """
+    Return a mouth mask using MediaPipe Face Mesh when available.
+
+    This implementation selects a face from the input frame by finding the one with the highest IoU with the target face bounding box.
+    It then uses the convex hull of the lips points to create a mask.
+
+    Args:
+        frame: Input frame as a numpy array.
+        target_face: Target face object with an optional bbox attribute.
+
+    Returns:
+        A numpy array of shape (h, w) with dtype uint8, representing the mask in [0, 255].
+        None if MediaPipe is not installed, or if the input frame is empty, or if the target face is not found.
+    """
     if mp is None or frame is None or frame.size == 0:
         return None
     h, w = frame.shape[:2]

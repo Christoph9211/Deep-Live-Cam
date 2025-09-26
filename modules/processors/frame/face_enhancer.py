@@ -40,6 +40,11 @@ def pre_check() -> bool:
 
 
 def pre_start() -> bool:
+    """
+    Check if the target path is an image or video. If not, update status to inform the user to select an image or video for the target path.
+    Returns:
+        bool: True if the target path is an image or video, False otherwise.
+    """
     if not is_image(modules.globals.target_path) and not is_video(
         modules.globals.target_path
     ):
@@ -49,12 +54,25 @@ def pre_start() -> bool:
 
 
 def get_face_enhancer() -> Any:
+    """
+    Returns a singleton instance of the face enhancer model.
+
+    The face enhancer model is lazily loaded when this function is first called.
+    It is loaded from the models directory, which is downloaded from the official
+    GFPGAN repository if it does not already exist.
+
+    The face enhancer model is an instance of the GFPGANer class from the
+    gfpgan module.
+
+    Returns:
+        Any: A singleton instance of the face enhancer model.
+    """
     global FACE_ENHANCER
 
     with THREAD_LOCK:
         if FACE_ENHANCER is None:
             model_path = os.path.join(models_dir, "GFPGANv1.4.pth")
-            
+
             match platform.system():
                 case "Darwin":  # Mac OS
                     if torch.backends.mps.is_available():
@@ -107,7 +125,7 @@ def process_frames(
     Args:
         source_path (str): The source path of the video or image.
         temp_frame_paths (List[str]): A list of paths to the frames to be processed.
-        progress (Any, optional): A progress object to update progress during 
+        progress (Any, optional): A progress object to update progress during
             processing. Defaults to None.
 
     Returns:
@@ -183,4 +201,3 @@ def process_frame_stream(source_path: str, frame: Frame) -> Frame:
         Frame: The frame with the enhanced face.
     """
     return process_frame(None, frame)
-

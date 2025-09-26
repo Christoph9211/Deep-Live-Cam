@@ -11,6 +11,15 @@ if platform.system() == "Windows":
 
 class VideoCapturer:
     def __init__(self, device_index: int):
+        """
+        Initializes a VideoCapturer object.
+
+        Args:
+            device_index (int): The index of the camera to capture from.
+
+        Raises:
+            ValueError: If the device index is out of range of available cameras.
+        """
         self.device_index = device_index
         self.frame_callback = None
         self._current_frame = None

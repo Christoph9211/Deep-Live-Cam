@@ -80,6 +80,18 @@ def ensure_model() -> bool:
 
 
 def _create_session() -> Optional[InferenceSession]:
+    """
+    Create an ONNX runtime inference session for BiSeNet face parsing.
+
+    If no model is present locally and no downloadable URL is provided,
+    this function will return None.
+
+    The created session will have the following properties:
+    - Graph optimization level: ORT_ENABLE_ALL
+    - Log severity level: WARNING (suppress info-level logs)
+
+    Returns an InferenceSession instance if successful, otherwise None.
+    """
     if not ensure_model():
         return None
     so = SessionOptions()

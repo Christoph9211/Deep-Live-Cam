@@ -45,6 +45,25 @@ class _LowPass:
         self.s: Optional[float] = init
 
     def filter(self, x: float, alpha: Optional[float] = None) -> float:
+        """
+        Applies the One-Euro low-pass filter to a signal.
+
+        The filter uses the following recurrence relation to smooth the signal:
+
+        `s = alpha * x + (1 - alpha) * s`
+
+        Where `alpha` is the smoothing factor, `x` is the current signal value, and `s` is the
+        previous smoothed signal value.
+
+        If `alpha` is not provided, the filter uses the `alpha` value set during initialization.
+
+        Args:
+            x (float): The current signal value.
+            alpha (Optional[float), optional): The smoothing factor. Defaults to None.
+
+        Returns:
+            float: The smoothed signal value.
+        """
         if alpha is None:
             alpha = self.alpha
         if self.s is None:
@@ -55,6 +74,21 @@ class _LowPass:
 
 
 def _alpha(cutoff: float, dt: float) -> float:
+    """
+    Calculates the alpha value for the One-Euro filter.
+
+    The alpha value is calculated as `1.0 / (1.0 + tau / dt)`, where
+    `tau` is the time constant of the filter and `dt` is the time step.
+
+    If the cutoff frequency is less than or equal to zero, returns 1.0.
+
+    Args:
+        cutoff (float): The cutoff frequency for the One-Euro filter.
+        dt (float): The time step in seconds.
+
+    Returns:
+        float: The alpha value for the One-Euro filter.
+    """
     if cutoff <= 0.0:
         return 1.0
     tau = 1.0 / (2.0 * math.pi * cutoff)
@@ -63,6 +97,14 @@ def _alpha(cutoff: float, dt: float) -> float:
 
 class _OneEuro:
     def __init__(self, min_cutoff: float = 1.0, beta: float = 0.0, dcutoff: float = 1.0):
+        """
+        Initializes a _OneEuro object.
+
+        Args:
+            min_cutoff (float): The minimum cutoff frequency for the One-Euro filter.
+            beta (float): The beta value for the One-Euro filter.
+            dcutoff (float): The derivative cutoff frequency for the One-Euro filter.
+        """
         self.min_cutoff = float(min_cutoff)
         self.beta = float(beta)
         self.dcutoff = float(dcutoff)
@@ -71,6 +113,20 @@ class _OneEuro:
         self._prev: Optional[float] = None
 
     def filter(self, x: float, dt: float) -> float:
+        """
+        Applies the One-Euro filter to a signal.
+
+        The filter is a second-order low-pass filter that is optimized for
+        real-time signal processing. It is designed to remove high-frequency
+        noise from a signal while preserving the signal's low-frequency
+        components.
+
+        The filter's cutoff frequency is dynamically adjusted based on the signal's
+        derivative. The derivative is used to estimate the signal's high-frequency
+        components, and the cutoff frequency is adjusted accordingly.
+
+        The filter's output is a smoothed version of the input signal.
+        """
         if self._prev is None:
             self._prev = x
         # Derivative of the signal
@@ -83,9 +139,29 @@ class _OneEuro:
 
 class _VectorEuro:
     def __init__(self, dim: int, min_cutoff: float, beta: float, dcutoff: float):
+        """
+        Initializes a _VectorEuro object.
+
+        Args:
+            dim (int): The number of dimensions to smooth.
+            min_cutoff (float): The minimum cutoff frequency for the One-Euro filter.
+            beta (float): The beta value for the One-Euro filter.
+            dcutoff (float): The derivative cutoff frequency for the One-Euro filter.
+        """
         self.filters = [_OneEuro(min_cutoff, beta, dcutoff) for _ in range(dim)]
 
     def filter(self, vec: List[float], dt: float) -> List[float]:
+
+        """
+        Applies the One-Euro filter to a list of values.
+
+        Args:
+            vec (List[float]): The list of values to smooth.
+            dt (float): The time step in seconds.
+
+        Returns:
+            List[float]: The smoothed list of values.
+        """
         return [self.filters[i].filter(float(vec[i]), dt) for i in range(len(vec))]
 
 
@@ -96,6 +172,15 @@ _SMOOTH_IN_STREAM: bool = False
 
 
 def _smoothing_dt() -> float:
+    """
+    Returns the time step for smoothing in seconds.
+
+    If 'smoothing_use_fps' is True, the time step is calculated as 1.0 / fps,
+    where fps is the value of 'smoothing_fps' or 30.0 if not set.
+
+    Otherwise, the time step is the difference in seconds between the current time
+    and the last time step, or 1e-3 if the difference is less than 1e-3.
+    """
     if getattr(modules.globals, 'smoothing_use_fps', True):
         fps = float(getattr(modules.globals, 'smoothing_fps', 30.0) or 30.0)
         return 1.0 / max(1.0, fps)
@@ -110,6 +195,15 @@ def _smoothing_dt() -> float:
 
 
 def _get_single_filters() -> Tuple[_VectorEuro, _VectorEuro]:
+    """
+    Returns a tuple of two _VectorEuro filters, for smoothing the keypoints
+    and bounding box of the face in the stream. The filters are created once
+    and stored in the _SMOOTH_SINGLE global variable to avoid repeated creation.
+    The filters are created with the values of the smoothing_min_cutoff,
+    smoothing_beta, and smoothing_dcutoff attributes of the modules.globals
+    object, which can be set in the Advanced Settings popup.
+    """
+
     global _SMOOTH_SINGLE
     if _SMOOTH_SINGLE is None:
         mc = float(getattr(modules.globals, 'smoothing_min_cutoff', 1.0))
@@ -120,6 +214,17 @@ def _get_single_filters() -> Tuple[_VectorEuro, _VectorEuro]:
 
 
 def _auto_canny(gray: np.ndarray, sigma: float = 0.33) -> np.ndarray:
+    """
+    Automatically apply optimal lower and upper thresholds to the Canny edge detector.
+
+    Args:
+        gray (np.ndarray): Input grayscale image
+        sigma (float, optional): Standard deviation of Gaussian distribution. Defaults to 0.33.
+
+    Returns:
+        np.ndarray: Output binary image containing detected edges
+    """
+
     v = np.median(gray)
     lower = int(max(0, (1.0 - sigma) * v))
     upper = int(min(255, (1.0 + sigma) * v))
@@ -127,6 +232,18 @@ def _auto_canny(gray: np.ndarray, sigma: float = 0.33) -> np.ndarray:
 
 
 def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: float = 0.12) -> Tuple[int, int, int, int]:
+    """
+    Expand a bounding box by a given padding factor.
+
+    Args:
+        bbox (Tuple[float, float, float, float]): Bounding box coordinates (x1, y1, x2, y2)
+        w (int): Width of the image
+        h (int): Height of the image
+        pad (float): Padding factor (default = 0.12)
+
+    Returns:
+        Tuple[int, int, int, int]: Expanded bounding box coordinates (xi1, yi1, xi2, yi2)
+    """
     x1, y1, x2, y2 = map(float, bbox)
     bw = x2 - x1
     bh = y2 - y1
@@ -144,6 +261,17 @@ def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: f
 
 
 def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
+    """
+    Preserves foreground occluders (e.g., hands, props) by reinstating
+    original pixels where strong edges present in the original are missing
+    in the swapped output. Enabled by default.
+
+    The detection process is based on edge differences between the original and swapped frames.
+    The edges are detected using the Canny edge detector after applying a bilateral filter to reduce noise.
+    The edges are then dilated to cover thin fingers/props, and the resulting mask is used to blend the original and swapped frames.
+    The blending process is soft, meaning that the original and swapped frames are weighted by the edge mask and then added together.
+    The final output is a frame that contains the original occluders, but with the swapped face.
+    """
     try:
         h, w = swapped_frame.shape[:2]
         s = float(getattr(modules.globals, 'occlusion_sensitivity', 0.5) or 0.0)
@@ -207,6 +335,16 @@ def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, targe
 
 
 def _smooth_face_inplace(face: Face, dt: float) -> None: # type: ignore
+    """Smooths the face landmarks and bounding box of a face using a
+    single-pole IIR filter.
+
+    Args:
+        face (Face): The face containing the landmarks and bounding box to smooth.
+        dt (float): The time step for the filter.
+
+    Returns:
+        None
+    """
     try:
         kps = getattr(face, 'kps', None)
         bbox = getattr(face, 'bbox', None)
@@ -260,6 +398,15 @@ def pre_start() -> bool:
 
 
 def get_face_swapper() -> Any:
+    """
+    Returns the face swapper model instance.
+
+    This function will load the face swapper model from disk if it has not been loaded before.
+    It will first try to load the FP32 model, and if that fails, it will try to load the FP16 model.
+    If neither model is found, it will raise a FileNotFoundError.
+
+    The function is thread-safe and will block other threads until the model is loaded or an exception is thrown.
+    """
     global FACE_SWAPPER
 
     with THREAD_LOCK:
@@ -296,17 +443,22 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
-    """Blend original mouth region back using semantic parsing when available.
-
-    Strategy:
-    - Try semantic mask via MediaPipe Face Mesh (if installed).
-    - Fall back to existing ellipse heuristic using 5-point kps or bbox.
-
-    Respects globals: mouth_mask, show_mouth_mask_box, mask_feather_ratio, mask_down_size, mask_size.
-    """
+def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:  # type: ignore
+    """Blend original mouth region back using semantic parsing when available."""
     try:
         h, w = swapped_frame.shape[:2]
+
+        def _normalize_mask(mask: np.ndarray) -> np.ndarray:
+            """
+            Normalize a mask to the range [0.0, 1.0].
+            If the maximum value of the mask is greater than 1.0, it is divided by 255.0 to scale it down.
+            Finally, the values are clipped to the range [0.0, 1.0] to ensure it is a valid mask.
+            """
+
+            m = mask.astype(np.float32, copy=False)
+            if m.max(initial=0.0) > 1.0:
+                m = m / 255.0
+            return np.clip(m, 0.0, 1.0)
 
         # 1) Try unified region masks if available (BiSeNet preferred)
         if get_semantic_region_masks is not None:
@@ -319,26 +471,25 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
                 applied = False
                 # Teeth/inner mouth preservation
                 if getattr(modules.globals, 'preserve_teeth', False) and 'inner_mouth' in masks and isinstance(masks['inner_mouth'], np.ndarray):
-                    m = masks['inner_mouth'].astype(np.float32)
+                    m = _normalize_mask(masks['inner_mouth'])
                     m3 = np.repeat(m[:, :, None], 3, axis=2)
                     composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
                     applied = True
                 # Mouth/lips preservation
                 if getattr(modules.globals, 'mouth_mask', False) and 'mouth' in masks and isinstance(masks['mouth'], np.ndarray):
-                    m = masks['mouth'].astype(np.float32)
+                    m = _normalize_mask(masks['mouth'])
                     m3 = np.repeat(m[:, :, None], 3, axis=2)
                     composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
                     applied = True
                 # Hairline preservation
                 if getattr(modules.globals, 'preserve_hairline', False) and 'hair' in masks and isinstance(masks['hair'], np.ndarray):
-                    m = masks['hair'].astype(np.float32)
+                    m = _normalize_mask(masks['hair'])
                     m3 = np.repeat(m[:, :, None], 3, axis=2)
                     composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
                     applied = True
 
                 composed = np.clip(composed, 0, 255).astype(np.uint8)
                 if applied:
-                    # Optional overlay for mouth mask
                     if getattr(modules.globals, 'show_mouth_mask_box', False):
                         try:
                             to_draw = []
@@ -349,7 +500,7 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
                             if getattr(modules.globals, 'preserve_hairline', False) and 'hair' in masks:
                                 to_draw.append(masks['hair'])
                             for ms in to_draw:
-                                vis = (ms * 255).astype(np.uint8)
+                                vis = (_normalize_mask(ms) * 255).astype(np.uint8)
                                 contours, _ = cv2.findContours(vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                                 cv2.drawContours(composed, contours, -1, (0, 255, 0), 2)
                         except Exception:
@@ -364,11 +515,13 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
             except Exception:
                 mask = None
         if isinstance(mask, np.ndarray) and mask.shape[:2] == (h, w) and getattr(modules.globals, 'mouth_mask', False):
+            mask = _normalize_mask(mask)
             feather = int(max(3, max(w, h) / max(float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8), 1.0)))
             if feather % 2 == 0:
                 feather += 1
             if feather >= 3:
                 mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+                mask = _normalize_mask(mask)
             mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
             composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
             composed = np.clip(composed, 0, 255).astype(np.uint8)
@@ -418,14 +571,17 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
         ax_ds = max(1, int(round(ax * down)))
         ay_ds = max(1, int(round(ay * down)))
         cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, (255, 255, 255), -1)
+        mask_small = _normalize_mask(mask_small)
 
         feather = max(1, int(max(ax_ds, ay_ds) / max(feather_ratio, 1.0)))
         if feather % 2 == 0:
             feather += 1
         if feather >= 3:
             mask_small = cv2.GaussianBlur(mask_small, (feather, feather), 0)
+            mask_small = _normalize_mask(mask_small)
 
         mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask = _normalize_mask(mask)
         mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
         composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
         composed = np.clip(composed, 0, 255).astype(np.uint8)

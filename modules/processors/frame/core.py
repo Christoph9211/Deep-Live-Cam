@@ -6,7 +6,7 @@ from typing import Any, List, Callable
 from tqdm import tqdm
 
 import modules
-import modules.globals                   
+import modules.globals
 from queue import Queue, Empty
 FRAME_PROCESSORS_MODULES: List[ModuleType] = []
 FRAME_PROCESSORS_INTERFACE = [
@@ -43,7 +43,7 @@ def get_frame_processors_modules(frame_processors: List[str]) -> List[ModuleType
 
 def set_frame_processors_modules_from_ui(frame_processors: List[str]) -> None:
     """Add or remove frame processor modules from FRAME_PROCESSORS_MODULES based on the ui switch state.
-    
+
     Args:
         frame_processors (List[str]): List of frame processor names
     """
@@ -68,7 +68,7 @@ def multi_process_frame(
     progress: Any = None,
     batch_size: int = 64,
 ) -> None:
-    
+
     # Ensure batch_size and max_workers are valid
     """
     Process frames in parallel using a thread pool.
@@ -92,6 +92,19 @@ def multi_process_frame(
         frame_queue.put(path)
 
     def worker() -> None:
+        """
+        Worker function for multi_process_frame.
+
+        This function is a target for threads in a ThreadPoolExecutor. It will
+        continually pull frames from the frame_queue and process them in batches
+        until the queue is empty.
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
         while True:
             batch: List[str] = []
             try:
@@ -112,7 +125,7 @@ def multi_process_frame(
         futures = [executor.submit(worker) for _ in range(max_workers)]
         for future in futures:
             future.result() # Wait for all workers to complete
-            
+
 # def multi_process_frame(source_path: str, temp_frame_paths: List[str], process_frames: Callable[[str, List[str], Any], None], progress: Any = None) -> None:
 #     with ThreadPoolExecutor(max_workers=modules.globals.execution_threads) as executor:
 #         futures = []
@@ -134,7 +147,7 @@ def process_video(source_path: str, frame_paths: list[str], process_frames: Call
         process_frames (Callable[[str, List[str], Any], None]): Function to process frames
         batch_size (int, optional): Number of frames to process in a single batch. Defaults to 64.
     """
-    
+
     progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
     total = len(frame_paths)
     with tqdm(total=total, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
