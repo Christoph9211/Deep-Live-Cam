@@ -175,10 +175,13 @@ def restore_audio(target_path: str, output_path: str) -> None:
 
 def get_temp_frame_paths(target_path: str) -> List[str]:
     temp_directory_path = get_temp_directory_path(target_path)
-    return glob.glob((os.path.join(glob.escape(temp_directory_path), "*.png")))
+    return sorted(glob.glob((os.path.join(glob.escape(temp_directory_path), "*.png"))))
 
 
 def get_temp_directory_path(target_path: str) -> str:
+    override = getattr(modules.globals, 'temp_frame_input_directory', None)
+    if override:
+        return override
     target_name, _ = os.path.splitext(os.path.basename(target_path))
     target_directory_path = os.path.dirname(target_path)
     return os.path.join(target_directory_path, TEMP_DIRECTORY, target_name)
@@ -214,6 +217,8 @@ def move_temp(target_path: str, output_path: str) -> None:
 
 
 def clean_temp(target_path: str) -> None:
+    if getattr(modules.globals, 'reuse_temp_dir', False):
+        return
     temp_directory_path = get_temp_directory_path(target_path)
     parent_directory_path = os.path.dirname(temp_directory_path)
     if not modules.globals.keep_frames and os.path.isdir(temp_directory_path):
