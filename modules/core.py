@@ -60,6 +60,7 @@ def parse_args() -> None:
     program.add_argument('--keep-fps', help='keep original fps', dest='keep_fps', action='store_true', default=False)
     program.add_argument('--keep-audio', help='keep original audio', dest='keep_audio', action='store_true', default=True)
     program.add_argument('--keep-frames', help='keep temporary frames', dest='keep_frames', action='store_true', default=False)
+    program.add_argument('--temp-frame-dir', help='reuse an existing directory of extracted PNG frames', dest='temp_frame_dir')
     program.add_argument('--many-faces', help='process every face', dest='many_faces', action='store_true', default=False)
     program.add_argument('--nsfw-filter', help='filter the NSFW image or video', dest='nsfw_filter', action='store_true', default=False)
     program.add_argument('--map-faces', help='map source target faces', dest='map_faces', action='store_true', default=False)
@@ -102,6 +103,8 @@ def parse_args() -> None:
     modules.globals.keep_fps = args.keep_fps
     modules.globals.keep_audio = args.keep_audio
     modules.globals.keep_frames = args.keep_frames
+    modules.globals.temp_frame_input_directory = os.path.abspath(args.temp_frame_dir) if args.temp_frame_dir else None
+    modules.globals.reuse_temp_dir = bool(modules.globals.temp_frame_input_directory)
     modules.globals.many_faces = args.many_faces
     modules.globals.mouth_mask = args.mouth_mask
     modules.globals.nsfw_filter = args.nsfw_filter
@@ -356,7 +359,9 @@ def start() -> None:
     if modules.globals.nsfw_filter and ui.check_and_ignore_nsfw(modules.globals.target_path, destroy):
         return
 
-    if not modules.globals.map_faces:
+    use_existing_frames = bool(modules.globals.temp_frame_input_directory)
+
+    if not modules.globals.map_faces and not use_existing_frames:
         stream_video()
         if is_video(modules.globals.target_path):
             update_status('Processing to video succeed!')
@@ -364,12 +369,24 @@ def start() -> None:
             update_status('Processing to video failed!')
         return
 
-    update_status('Creating temp resources...')
-    create_temp(modules.globals.target_path)
-    update_status('Extracting frames...')
-    extract_frames(modules.globals.target_path)
+    if use_existing_frames:
+        temp_dir = modules.globals.temp_frame_input_directory
+        if not temp_dir or not os.path.isdir(temp_dir):
+            update_status(f"Provided temp frame directory not found: {temp_dir}")
+            modules.globals.temp_frame_input_directory = None
+            modules.globals.reuse_temp_dir = False
+            return
+        update_status('Reusing existing temp frames...')
+    else:
+        update_status('Creating temp resources...')
+        create_temp(modules.globals.target_path)
+        update_status('Extracting frames...')
+        extract_frames(modules.globals.target_path)
 
     temp_frame_paths = get_temp_frame_paths(modules.globals.target_path)
+    if not temp_frame_paths:
+        update_status('No PNG frames found to process in the temp directory.')
+        return
     for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
         update_status('Progressing...', frame_processor.NAME)
         frame_processor.process_video(modules.globals.source_path, temp_frame_paths)
