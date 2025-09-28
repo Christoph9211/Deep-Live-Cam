@@ -12,7 +12,7 @@ import modules.processors.frame.core
 # Ensure update_status is imported if not already globally accessible
 # If it's part of modules.core, it might already be accessible via modules.core.update_status
 from modules.core import update_status
-from modules.face_analyser import get_one_face, get_many_faces, default_source_face
+from modules.face_analyser import FACE_INFER_LOCK, get_one_face, get_many_faces, default_source_face
 from modules.typing import Face, Frame
 from modules.utilities import conditional_download, resolve_relative_path, is_image, is_video
 from modules.cluster_analysis import find_closest_centroid
@@ -702,7 +702,8 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         if (not getattr(modules.globals, 'smoothing_stream_only', True)) or _SMOOTH_IN_STREAM:
             _smooth_face_inplace(target_face, _smoothing_dt())
 
-    swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    with FACE_INFER_LOCK:
+        swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
     # Apply region preservation if any toggle is enabled
     if (

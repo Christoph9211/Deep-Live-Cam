@@ -2,6 +2,7 @@ import os
 import shutil
 from typing import Any
 import insightface
+import threading
 
 import cv2
 import numpy as np
@@ -13,6 +14,7 @@ from modules.utilities import get_temp_directory_path, create_temp, extract_fram
 from pathlib import Path
 
 FACE_ANALYSER = None
+FACE_INFER_LOCK = threading.RLock()
 
 
 def get_face_analyser() -> Any:
@@ -34,9 +36,11 @@ def get_one_face(frame: Frame) -> Any:
     Returns:
         The face object with the leftmost bounding box, or None if no faces are detected.
     """
-    face = get_face_analyser().get(frame)
+    analyser = get_face_analyser()
+    with FACE_INFER_LOCK:
+        faces = analyser.get(frame)
     try:
-        return min(face, key=lambda x: x.bbox[0])
+        return min(faces, key=lambda x: x.bbox[0])
     except ValueError:
         return None
 
@@ -51,8 +55,11 @@ def get_many_faces(frame: Frame) -> Any:
     Returns:
         The list of detected faces, or None if no faces are detected.
     """
+    analyser = get_face_analyser()
     try:
-        return get_face_analyser().get(frame)
+        with FACE_INFER_LOCK:
+            faces = analyser.get(frame)
+        return faces
     except IndexError:
         return None
 
@@ -261,3 +268,4 @@ def dump_faces(centroids: Any, frame_face_embeddings: list):
                     if temp_frame[int(y_min):int(y_max), int(x_min):int(x_max)].size > 0:
                         cv2.imwrite(temp_directory_path + f"/{i}/{frame['frame']}_{j}.png", temp_frame[int(y_min):int(y_max), int(x_min):int(x_max)])
                 j += 1
+

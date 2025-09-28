@@ -84,6 +84,13 @@ def multi_process_frame(
     effective_batch_size = max(1, batch_size)
     max_workers = max(1, modules.globals.execution_threads or 1)
 
+    if max_workers == 1:
+        for i in range(0, len(temp_frame_paths), effective_batch_size):
+            batch = temp_frame_paths[i:i + effective_batch_size]
+            if batch:
+                process_frames(source_path, batch, progress)
+        return
+
     frame_queue: Queue[str] = Queue()
     for path in temp_frame_paths:
         frame_queue.put(path)
@@ -104,13 +111,13 @@ def multi_process_frame(
         """
         while True:
             batch: List[str] = []
-            try:
-                # Pull up to effective_batch_size items without blocking
-                for _ in range(effective_batch_size):
+            for _ in range(effective_batch_size):
+                try:
+                    # Pull up to effective_batch_size items without blocking
                     batch.append(frame_queue.get_nowait())
-            except Empty:
-                # Stop filling this batch when the queue runs dry
-                break
+                except Empty:
+                    # Queue is empty; process what we already collected
+                    break
 
             if not batch:
                 # No items were retrieved, so the queue was empty. Worker can exit.
