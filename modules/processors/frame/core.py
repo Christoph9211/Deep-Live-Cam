@@ -66,9 +66,9 @@ def multi_process_frame(
     temp_frame_paths: List[str],
     process_frames: Callable[[str, List[str], Any], None],
     progress: Any = None,
-    batch_size: int = 64,
+    batch_size: int = 1,
 ) -> None:
-
+    
     # Ensure batch_size and max_workers are valid
     """
     Process frames in parallel using a thread pool.
@@ -92,28 +92,15 @@ def multi_process_frame(
         frame_queue.put(path)
 
     def worker() -> None:
-        """
-        Worker function for multi_process_frame.
-
-        This function is a target for threads in a ThreadPoolExecutor. It will
-        continually pull frames from the frame_queue and process them in batches
-        until the queue is empty.
-
-        Args:
-            None
-
-        Returns:
-            None
-        """
         while True:
             batch: List[str] = []
-            # Pull up to effective_batch_size items without blocking
-            for _ in range(effective_batch_size):
-                try:
+            try:
+                # Pull up to effective_batch_size items without blocking
+                for _ in range(effective_batch_size):
                     batch.append(frame_queue.get_nowait())
-                except Empty:
-                    # Stop filling this batch when the queue runs dry
-                    pass
+            except Empty:
+                # Stop filling this batch when the queue runs dry
+                break
 
             if not batch:
                 # No items were retrieved, so the queue was empty. Worker can exit.
@@ -125,7 +112,6 @@ def multi_process_frame(
         futures = [executor.submit(worker) for _ in range(max_workers)]
         for future in futures:
             future.result() # Wait for all workers to complete
-
 # def multi_process_frame(source_path: str, temp_frame_paths: List[str], process_frames: Callable[[str, List[str], Any], None], progress: Any = None) -> None:
 #     with ThreadPoolExecutor(max_workers=modules.globals.execution_threads) as executor:
 #         futures = []
@@ -136,7 +122,7 @@ def multi_process_frame(
 #             future.result()
 
 
-def process_video(source_path: str, frame_paths: list[str], process_frames: Callable[[str, List[str], Any], None], batch_size: int = 64) -> None:
+def process_video(source_path: str, frame_paths: list[str], process_frames: Callable[[str, List[str], Any], None], batch_size: int = 1) -> None:
     """
     Process frames in batches using a configurable number of worker threads.
     This approach is efficient by reducing task creation overhead.
