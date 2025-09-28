@@ -113,7 +113,7 @@ def multi_process_frame(
                     batch.append(frame_queue.get_nowait())
                 except Empty:
                     # Stop filling this batch when the queue runs dry
-                    break
+                    pass
 
             if not batch:
                 # No items were retrieved, so the queue was empty. Worker can exit.
