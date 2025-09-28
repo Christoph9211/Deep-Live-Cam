@@ -1,10 +1,12 @@
 import os  # <-- Added for os.path.exists
-from typing import Any, List
-from pathlib import Path
+import time
+import math
+from typing import Any, List, Optional, Tuple
 import cv2
 import numpy as np
 import insightface
 import threading
+import numpy as np
 import mediapipe as mp
 
 import modules.globals
@@ -16,715 +18,352 @@ from modules.face_analyser import get_one_face, get_many_faces, default_source_f
 from modules.typing import Face, Frame
 from modules.utilities import conditional_download, resolve_relative_path, is_image, is_video
 from modules.cluster_analysis import find_closest_centroid
+try:
+    # Optional semantic segmenter (MediaPipe Face Mesh based)
+    from modules.segmenters.semantic import get_mouth_mask as get_semantic_mouth_mask
+except Exception:
+    get_semantic_mouth_mask = None  # type: ignore
+
+# Try to import unified region masks provider
+try:
+    from modules.segmenters.semantic import get_region_masks as get_semantic_region_masks  # type: ignore
+except Exception:
+    try:
+        from modules.segmenters.bisenet_onnx import get_region_masks as get_semantic_region_masks  # type: ignore
+    except Exception:
+        get_semantic_region_masks = None  # type: ignore
 
 FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
 
-SEGMENTER = None
-
-
-from typing import Tuple
-
-
-from typing import Optional
-
-def get_combined_source_face(source_path: str) -> Optional[Face]: # type: ignore
-    """Load the source face and optionally merge with an open-mouth still."""
-    source_img = cv2.imread(source_path)
-    if source_img is None:
-        return None
-    source_face = get_one_face(source_img)
-    open_path = modules.globals.open_mouth_source_path
-    if source_face is not None and open_path and is_image(open_path):
-        open_img = cv2.imread(open_path)
-        if open_img is not None:
-            open_face = get_one_face(open_img)
-            if open_face is not None and hasattr(source_face, "embedding") and hasattr(open_face, "embedding"):
-                combined = source_face.embedding + open_face.embedding
-                norm = np.linalg.norm(combined)
-                if norm != 0:
-                    combined = combined / norm
-                source_face.embedding = combined
-    return source_face
-
-# def create_lower_mouth_mask(
-#     face: Face, frame: Frame # type: ignore
-# ) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
-#     """Create a mask tightly around the mouth area, including only the upper lip (not the nose)."""
-
-#     # Create a zero-filled mask with the same height and width as the frame
-#     mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-#     # Initialize the mouth cutout, which will be populated if the face has landmarks
-#     mouth_cutout = None
-#     # Get the 106-point landmark array from the face
-#     landmarks = face.landmark_2d_106
-
-#     if landmarks is not None:
-#         # Restrict indices to outer lip and immediate upper lip, avoiding nose
-#         mouth_indices =  [
-#             65,
-#             66,
-#             62,
-#             70,
-#             69,
-#             18,
-#             19,
-#             20,
-#             21,
-#             22,
-#             23,
-#             24,
-#             0,
-#             8,
-#             7,
-#             6,
-#             5,
-#             4,
-#             3,
-#             2,
-#             65,
-#         ]
-#         # mouth_indices = list(range(52, 72))
-#         # mouth_indices = [
-#         #     65, 66, 62, 70, 69, # upper lip corners
-#         #     60, 61, 63, 64, 71, 72, 73, 74, 75, # just above upper lip
-#         #     8, 7, 6, 5, 4, 3, 2, # lower lip
-#         #     0 # left mouth corner
-#         # ]
-#         # Only use points that form the upper lip and immediate area above
-#         mouth_points = landmarks[mouth_indices].astype(np.int32)
-#         # Compute the convex hull of the mouth points
-#         hull = cv2.convexHull(mouth_points)
-#         # Get the bounding box of the convex hull
-#         x, y, w, h = cv2.boundingRect(hull)
-
-#         # Clip coordinates to ensure we do not index outside of the frame
-#         frame_height, frame_width = frame.shape[:2]
-#         min_x, min_y = x, y
-#         max_x, max_y = x + w, y + h
-#         clip_min_x = max(min_x, 0)
-#         clip_min_y = max(min_y, 0)
-#         clip_max_x = min(max_x, frame_width)
-#         clip_max_y = min(max_y, frame_height)
-
-#         # Create a zero-filled mask ROI with the same shape as the bounding box
-#         mask_roi_full = np.zeros((h, w), dtype=np.uint8)
-#         # Shift the convex hull so that the origin is at the top-left of the bounding box
-#         shifted_hull = hull - [x, y]
-#         # Fill the convex hull in the mask ROI with white (255)
-#         cv2.fillConvexPoly(mask_roi_full, shifted_hull, 255)
-
-#         # Optional: very slight blur for feathering, but not enough to extend past mouth
-#         mask_roi_full = cv2.GaussianBlur(mask_roi_full, (5, 5), 1)
-
-#         # Crop ROI if clipping occurred
-#         mask_roi = mask_roi_full[clip_min_y - y : clip_max_y - y, clip_min_x - x : clip_max_x - x]
-
-#         # Copy the mask ROI into the output mask
-#         mask[clip_min_y:clip_max_y, clip_min_x:clip_max_x] = mask_roi
-
-#         # Extract the mouth cutout from the original frame
-#         mouth_cutout = frame[clip_min_y:clip_max_y, clip_min_x:clip_max_x].copy()
-#         # Save the lower lip polygon (the convex hull of the mouth points)
-#         lower_lip_polygon = hull
-#         # Return the mask, mouth cutout, bounding box coordinates, and lower lip polygon
-#         return mask, mouth_cutout, (clip_min_x, clip_min_y, clip_max_x, clip_max_y), lower_lip_polygon
-
-#     # If the face does not have landmarks, return an empty mask and None for the mouth cutout
-#     return mask, mouth_cutout, (0, 0, 0, 0), None
-
-
-# # def draw_mouth_mask_visualization(
-# #     frame: Frame, face: Face, mouth_mask_data: tuple # type: ignore
-# # ) -> Frame:
-# #     """Visualize the expanded mouth mask and the lower lip polygon.
-
-# #     This function takes a frame and a face as input and returns a new frame with
-# #     visualizations of the expanded mouth mask and the lower lip polygon.
-
-# #     Args:
-# #         frame: The original frame.
-# #         face: The face object containing the landmarks.
-# #         mouth_mask_data: A tuple containing the mouth mask, the mouth cutout, the
-# #             bounding box coordinates, and the lower lip polygon.
-
-# #     Returns:
-# #         A new frame with visualizations of the expanded mouth mask and the lower
-# #             lip polygon.
-# #     """
-
-# #     # Get the landmarks from the face object
-# #     landmarks = face.landmark_2d_106
-
-# #     # If the landmarks are not None, proceed with visualization
-# #     if landmarks is not None and mouth_mask_data is not None:
-# #         # Unpack the mouth mask data tuple
-# #         mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon = mouth_mask_data
-
-# #         # Create a copy of the original frame for visualization
-# #         vis_frame = frame.copy()
-
-# #         # Get the height and width of the frame
-# #         height, width = vis_frame.shape[:2]
-
-# #         # Clip the coordinates to ensure they do not exceed the frame boundaries
-# #         min_x, min_y = max(0, min_x), max(0, min_y)
-# #         max_x, max_y = min(width, max_x), min(height, max_y)
-
-# #         # --- Expanded region: include chin, lower cheeks, and more of the upper lip ---
-
-# #         # Define the indices for the expanded mouth region
-# #         # These indices include the chin, lower cheek area, and more of the upper lip
-# #         chin_indices = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 0, 1, 2, 3]
-# #         mouth_indices = [
-# #             65, 66, 62, 70, 69, 18, 19, 20, 21, 22, 23, 24, 0, 8, 7, 6, 5, 4, 3, 2,
-# #             60, 61, 63, 64, 71, 72, 73, 74, 75  # points above upper lip (adjust as needed)
-# #         ]
-# #         upper_lip_indices = [76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99]
-
-# #         # Concatenate the expanded points
-# #         expanded_points = np.concatenate([
-# #             landmarks[mouth_indices],
-# #             landmarks[chin_indices][::-1],
-# #             landmarks[upper_lip_indices][::-1]
-# #         ]).astype(np.int32)
-
-# #         # Compute the convex hull of the expanded points
-# #         expanded_hull = cv2.convexHull(expanded_points)
-
-# #         # Draw the expanded hull as a yellow polygon
-# #         cv2.polylines(vis_frame, [expanded_hull], True, (0, 128, 255), 2)
-
-# #         # Draw the lower lip polygon as a green polygon
-# #         cv2.polylines(vis_frame, [lower_lip_polygon], True, (0, 255, 0), 2)
-
-# #         # Draw a filled expanded mask (semi-transparent overlay)
-# #         overlay = vis_frame.copy()
-# #         cv2.fillConvexPoly(overlay, expanded_hull, (0, 128, 255))
-# #         alpha = 0.25
-# #         vis_frame = cv2.addWeighted(overlay, alpha, vis_frame, 1 - alpha, 0)
-
-# #         # Feathered mask for the expanded region
-# #         mask_region = np.zeros((max_y - min_y, max_x - min_x), dtype=np.uint8)
-# #         shifted_hull = expanded_hull - [min_x, min_y]
-# #         cv2.fillConvexPoly(mask_region, shifted_hull, 255)
-# #         feather_amount = max(
-# #             5,
-# #             min(40, (max_x - min_x) // 8, (max_y - min_y) // 8),
-# #         )
-# #         kernel_size = 2 * feather_amount + 1
-# #         feathered_mask = cv2.GaussianBlur(mask_region.astype(float), (kernel_size, kernel_size), 0)
-# #         feathered_mask = (feathered_mask / feathered_mask.max() * 255).astype(np.uint8)
-# #         # Overlay feathered mask as heatmap
-# #         color_mask = cv2.applyColorMap(feathered_mask, cv2.COLORMAP_JET)
-# #         mask_area = vis_frame[min_y:max_y, min_x:max_x]
-# #         vis_frame[min_y:max_y, min_x:max_x] = cv2.addWeighted(mask_area, 0.7, color_mask, 0.3, 0)
-
-# #         # Add a text label to the visualization
-# #         cv2.putText(
-# #             vis_frame,
-# #             "Expanded Mouth/Chin Mask",
-# #             (min_x, min_y - 10),
-# #             cv2.FONT_HERSHEY_SIMPLEX,
-# #             0.5,
-# #             (255, 255, 255),
-# #             1,
-# #         )
-
-# #         # Return the visualization
-# #         return vis_frame
-
-# #     # If the landmarks are None, return the original frame
-# #     return frame
-
-# def draw_mouth_mask_visualization(
-#     frame: Frame, face: Face, mouth_mask_data: tuple # type: ignore
-# ) -> Frame:
-#     landmarks = face.landmark_2d_106
-#     if landmarks is not None and mouth_mask_data is not None:
-#         mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon = (
-#             mouth_mask_data
-#         )
-
-#         vis_frame = frame.copy()
-
-#         # Ensure coordinates are within frame bounds
-#         height, width = vis_frame.shape[:2]
-#         min_x, min_y = max(0, min_x), max(0, min_y)
-#         max_x, max_y = min(width, max_x), min(height, max_y)
-
-#         # Adjust mask to match the region size
-#         mask_region = mask[0 : max_y - min_y, 0 : max_x - min_x]
-
-#         # vis_region = vis_frame[min_y:max_y, min_x:max_x]
-
-#         # Draw the lower lip polygon
-#         cv2.polylines(vis_frame, [lower_lip_polygon], True, (0, 255, 0), 2)
-
-#         feather_amount = max(
-#             1,
-#             min(
-#                 30,
-#                 (max_x - min_x) // modules.globals.mask_feather_ratio,
-#                 (max_y - min_y) // modules.globals.mask_feather_ratio,
-#             ),
-#         )
-#         kernel_size = 2 * feather_amount + 1
-#         feathered_mask = cv2.GaussianBlur(
-#             mask_region.astype(float), (kernel_size, kernel_size), 0
-#         )
-#         feathered_mask = (feathered_mask / feathered_mask.max() * 255).astype(np.uint8)
-
-#         cv2.putText(
-#             vis_frame,
-#             "Lower Mouth Mask",
-#             (min_x, min_y - 10),
-#             cv2.FONT_HERSHEY_SIMPLEX,
-#             0.5,
-#             (255, 255, 255),
-#             1,
-#         )
-#         cv2.putText(
-#             vis_frame,
-#             "Feathered Mask",
-#             (min_x, max_y + 20),
-#             cv2.FONT_HERSHEY_SIMPLEX,
-#             0.5,
-#             (255, 255, 255),
-#             1,
-#         )
-
-#         return vis_frame
-#     return frame
-
-# def apply_mouth_area(
-#     frame: np.ndarray,
-#     mouth_cutout: np.ndarray,
-#     mouth_box: tuple,
-#     face_mask: np.ndarray,
-#     mouth_polygon: np.ndarray,
-# ) -> np.ndarray:
-#     min_x, min_y, max_x, max_y = mouth_box
-#     box_width = max_x - min_x
-#     box_height = max_y - min_y
-
-#     if (
-#         mouth_cutout is None
-#         or box_width is None
-#         or box_height is None
-#         or face_mask is None
-#         or mouth_polygon is None
-#     ):
-#         return frame
-
-#     try:
-#         resized_mouth_cutout = cv2.resize(mouth_cutout, (box_width, box_height))
-#         roi = frame[min_y:max_y, min_x:max_x]
-
-#         if roi.shape != resized_mouth_cutout.shape:
-#             resized_mouth_cutout = cv2.resize(
-#                 resized_mouth_cutout, (roi.shape[1], roi.shape[0])
-#             )
-
-#         color_corrected_mouth = apply_color_transfer(resized_mouth_cutout, roi)
-
-#         polygon_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
-#         adjusted_polygon = mouth_polygon - [min_x, min_y]
-#         cv2.fillPoly(polygon_mask, [adjusted_polygon], 255)
-
-#         feather_amount = min(
-#             30,
-#             box_width // modules.globals.mask_feather_ratio,
-#             box_height // modules.globals.mask_feather_ratio,
-#         )
-#         feathered_mask = cv2.GaussianBlur(
-#             polygon_mask.astype(float), (0, 0), feather_amount
-#         )
-#         feathered_mask = feathered_mask / feathered_mask.max()
-
-#         face_mask_roi = face_mask[min_y:max_y, min_x:max_x]
-#         combined_mask = feathered_mask * (face_mask_roi / 255.0)
-
-#         combined_mask = combined_mask[:, :, np.newaxis]
-#         blended = (
-#             color_corrected_mouth * combined_mask + roi * (1 - combined_mask)
-#         ).astype(np.uint8)
-
-#         face_mask_3channel = (
-#             np.repeat(face_mask_roi[:, :, np.newaxis], 3, axis=2) / 255.0
-#         )
-#         final_blend = blended * face_mask_3channel + roi * (1 - face_mask_3channel)
-
-#         frame[min_y:max_y, min_x:max_x] = final_blend.astype(np.uint8)
-#     except Exception as e:
-#         pass
-
-#     return frame
-
-def create_lower_mouth_mask(
-    face: Face, frame: Frame # type: ignore
-) -> Tuple[np.ndarray, np.ndarray, tuple, np.ndarray]:
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    mouth_cutout = None
-    landmarks = face.landmark_2d_106
-    if landmarks is not None:
-        #                  0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19 20
-        lower_lip_order = [
-            65,
-            66,
-            62,
-            70,
-            69,
-            18,
-            19,
-            20,
-            21,
-            22,
-            23,
-            24,
-            0,
-            8,
-            7,
-            6,
-            5,
-            4,
-            3,
-            2,
-            65,
-        ]
-        lower_lip_landmarks = landmarks[lower_lip_order].astype(
-            np.float32
-        )  # Use float for precise calculations
-
-        # Calculate the center of the landmarks
-        center = np.mean(lower_lip_landmarks, axis=0)
-
-        # Expand the landmarks outward
-        expansion_factor = (
-            1 + modules.globals.mask_down_size
-        )  # Adjust this for more or less expansion
-        expanded_landmarks = (lower_lip_landmarks - center) * expansion_factor + center
-
-        # Extend the top lip part
-        toplip_indices = [
-            20,
-            0,
-            1,
-            2,
-            3,
-            4,
-            5,
-        ]  # Indices for landmarks 2, 65, 66, 62, 70, 69, 18
-        toplip_extension = (
-            modules.globals.mask_size * 0.5
-        )  # Adjust this factor to control the extension
-        for idx in toplip_indices:
-            direction = expanded_landmarks[idx] - center
-            direction = direction / np.linalg.norm(direction)
-            expanded_landmarks[idx] += direction * toplip_extension
-
-        # Extend the bottom part (chin area)
-        chin_indices = [
-            11,
-            12,
-            13,
-            14,
-            15,
-            16,
-        ]  # Indices for landmarks 21, 22, 23, 24, 0, 8
-        chin_extension = 2 * 0.0  # Adjust this factor to control the extension
-        for idx in chin_indices:
-            expanded_landmarks[idx][1] += (
-                expanded_landmarks[idx][1] - center[1]
-            ) * chin_extension
-
-        # Convert back to integer coordinates
-        expanded_landmarks = expanded_landmarks.astype(np.int32)
-
-        # Calculate bounding box for the expanded lower mouth
-        min_x, min_y = np.min(expanded_landmarks, axis=0)
-        max_x, max_y = np.max(expanded_landmarks, axis=0)
-
-        # Add some padding to the bounding box
-        padding = int((max_x - min_x) * 0.1)  # 10% padding
-        min_x = max(0, min_x - padding)
-        min_y = max(0, min_y - padding)
-        max_x = min(frame.shape[1], max_x + padding)
-        max_y = min(frame.shape[0], max_y + padding)
-
-        # Ensure the bounding box dimensions are valid
-        if max_x <= min_x or max_y <= min_y:
-            if (max_x - min_x) <= 1:
-                max_x = min_x + 1
-            if (max_y - min_y) <= 1:
-                max_y = min_y + 1
-
-        # Create the mask
-        mask_roi = np.zeros((max_y - min_y, max_x - min_x), dtype=np.uint8)
-        cv2.fillPoly(mask_roi, [expanded_landmarks - [min_x, min_y]], 255)
-
-        # Apply Gaussian blur to soften the mask edges
-        mask_roi = cv2.GaussianBlur(mask_roi, (15, 15), 5)
-
-        # Place the mask ROI in the full-sized mask
-        mask[min_y:max_y, min_x:max_x] = mask_roi
-
-        # Extract the masked area from the frame
-        mouth_cutout = frame[min_y:max_y, min_x:max_x].copy()
-
-        # Return the expanded lower lip polygon in original frame coordinates
-        lower_lip_polygon = expanded_landmarks
-
-    return mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon
-
-
-def draw_mouth_mask_visualization(
-    frame: Frame, face: Face, mouth_mask_data: tuple # type: ignore
-) -> Frame:
-    landmarks = face.landmark_2d_106
-    if landmarks is not None and mouth_mask_data is not None:
-        mask, mouth_cutout, (min_x, min_y, max_x, max_y), lower_lip_polygon = (
-            mouth_mask_data
-        )
-
-        vis_frame = frame.copy()
-
-        # Ensure coordinates are within frame bounds
-        height, width = vis_frame.shape[:2]
-        min_x, min_y = max(0, min_x), max(0, min_y)
-        max_x, max_y = min(width, max_x), min(height, max_y)
-
-        # Adjust mask to match the region size
-        mask_region = mask[0 : max_y - min_y, 0 : max_x - min_x]
-
-        # Remove the color mask overlay
-        # color_mask = cv2.applyColorMap((mask_region * 255).astype(np.uint8), cv2.COLORMAP_JET)
-
-        # Ensure shapes match before blending
-        vis_region = vis_frame[min_y:max_y, min_x:max_x]
-        # Remove blending with color_mask
-        # if vis_region.shape[:2] == color_mask.shape[:2]:
-        #     blended = cv2.addWeighted(vis_region, 0.7, color_mask, 0.3, 0)
-        #     vis_frame[min_y:max_y, min_x:max_x] = blended
-
-        # Draw the lower lip polygon
-        cv2.polylines(vis_frame, [lower_lip_polygon], True, (0, 255, 0), 2)
-
-        # Remove the red box
-        # cv2.rectangle(vis_frame, (min_x, min_y), (max_x, max_y), (0, 0, 255), 2)
-
-        # Visualize the feathered mask
-        feather_amount = max(
-            1,
-            min(
-                30,
-                (max_x - min_x) // modules.globals.mask_feather_ratio,
-                (max_y - min_y) // modules.globals.mask_feather_ratio,
-            ),
-        )
-        # Ensure kernel size is odd
-        kernel_size = 2 * feather_amount + 1
-        feathered_mask = cv2.GaussianBlur(
-            mask_region.astype(float), (kernel_size, kernel_size), 0
-        )
-        max_val = feathered_mask.max()
-        if max_val > 0:
-            feathered_mask = (feathered_mask / max_val * 255).astype(np.uint8)
+# -----------------------------
+# One-Euro filter for smoothing
+# -----------------------------
+
+class _LowPass:
+    def __init__(self, alpha: float, init: Optional[float] = None):
+        self.alpha = alpha
+        self.s: Optional[float] = init
+
+    def filter(self, x: float, alpha: Optional[float] = None) -> float:
+        """
+        Applies the One-Euro low-pass filter to a signal.
+
+        The filter uses the following recurrence relation to smooth the signal:
+
+        `s = alpha * x + (1 - alpha) * s`
+
+        Where `alpha` is the smoothing factor, `x` is the current signal value, and `s` is the
+        previous smoothed signal value.
+
+        If `alpha` is not provided, the filter uses the `alpha` value set during initialization.
+
+        Args:
+            x (float): The current signal value.
+            alpha (Optional[float), optional): The smoothing factor. Defaults to None.
+
+        Returns:
+            float: The smoothed signal value.
+        """
+        if alpha is None:
+            alpha = self.alpha
+        if self.s is None:
+            self.s = x
         else:
-            feathered_mask = np.zeros_like(feathered_mask, dtype=np.uint8)
-        # Remove the feathered mask color overlay
-        # color_feathered_mask = cv2.applyColorMap(feathered_mask, cv2.COLORMAP_VIRIDIS)
-
-        # Ensure shapes match before blending feathered mask
-        # if vis_region.shape == color_feathered_mask.shape:
-        #     blended_feathered = cv2.addWeighted(vis_region, 0.7, color_feathered_mask, 0.3, 0)
-        #     vis_frame[min_y:max_y, min_x:max_x] = blended_feathered
-
-        # Add labels
-        cv2.putText(
-            vis_frame,
-            "Lower Mouth Mask",
-            (min_x, min_y - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-        )
-        cv2.putText(
-            vis_frame,
-            "Feathered Mask",
-            (min_x, max_y + 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            1,
-        )
-
-        return vis_frame
-    return frame
+            self.s = alpha * x + (1.0 - alpha) * self.s
+        return self.s
 
 
-def apply_mouth_area(
-    frame: np.ndarray,
-    mouth_cutout: np.ndarray,
-    mouth_box: tuple,
-    face_mask: np.ndarray,
-    mouth_polygon: np.ndarray,
-) -> np.ndarray:
-    min_x, min_y, max_x, max_y = mouth_box
-    box_width = max_x - min_x
-    box_height = max_y - min_y
+def _alpha(cutoff: float, dt: float) -> float:
+    """
+    Calculates the alpha value for the One-Euro filter.
 
-    if (
-        mouth_cutout is None
-        or box_width is None
-        or box_height is None
-        or face_mask is None
-        or mouth_polygon is None
-    ):
-        return frame
+    The alpha value is calculated as `1.0 / (1.0 + tau / dt)`, where
+    `tau` is the time constant of the filter and `dt` is the time step.
 
+    If the cutoff frequency is less than or equal to zero, returns 1.0.
+
+    Args:
+        cutoff (float): The cutoff frequency for the One-Euro filter.
+        dt (float): The time step in seconds.
+
+    Returns:
+        float: The alpha value for the One-Euro filter.
+    """
+    if cutoff <= 0.0:
+        return 1.0
+    tau = 1.0 / (2.0 * math.pi * cutoff)
+    return 1.0 / (1.0 + tau / max(dt, 1e-6))
+
+
+class _OneEuro:
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.0, dcutoff: float = 1.0):
+        """
+        Initializes a _OneEuro object.
+
+        Args:
+            min_cutoff (float): The minimum cutoff frequency for the One-Euro filter.
+            beta (float): The beta value for the One-Euro filter.
+            dcutoff (float): The derivative cutoff frequency for the One-Euro filter.
+        """
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.dcutoff = float(dcutoff)
+        self.dx = _LowPass(alpha=1.0)
+        self.x = _LowPass(alpha=1.0)
+        self._prev: Optional[float] = None
+
+    def filter(self, x: float, dt: float) -> float:
+        """
+        Applies the One-Euro filter to a signal.
+
+        The filter is a second-order low-pass filter that is optimized for
+        real-time signal processing. It is designed to remove high-frequency
+        noise from a signal while preserving the signal's low-frequency
+        components.
+
+        The filter's cutoff frequency is dynamically adjusted based on the signal's
+        derivative. The derivative is used to estimate the signal's high-frequency
+        components, and the cutoff frequency is adjusted accordingly.
+
+        The filter's output is a smoothed version of the input signal.
+        """
+        if self._prev is None:
+            self._prev = x
+        # Derivative of the signal
+        dx = (x - self._prev) / max(dt, 1e-6)
+        self._prev = x
+        edx = self.dx.filter(dx, _alpha(self.dcutoff, dt))
+        cutoff = self.min_cutoff + self.beta * abs(edx)
+        return self.x.filter(x, _alpha(cutoff, dt))
+
+
+class _VectorEuro:
+    def __init__(self, dim: int, min_cutoff: float, beta: float, dcutoff: float):
+        """
+        Initializes a _VectorEuro object.
+
+        Args:
+            dim (int): The number of dimensions to smooth.
+            min_cutoff (float): The minimum cutoff frequency for the One-Euro filter.
+            beta (float): The beta value for the One-Euro filter.
+            dcutoff (float): The derivative cutoff frequency for the One-Euro filter.
+        """
+        self.filters = [_OneEuro(min_cutoff, beta, dcutoff) for _ in range(dim)]
+
+    def filter(self, vec: List[float], dt: float) -> List[float]:
+
+        """
+        Applies the One-Euro filter to a list of values.
+
+        Args:
+            vec (List[float]): The list of values to smooth.
+            dt (float): The time step in seconds.
+
+        Returns:
+            List[float]: The smoothed list of values.
+        """
+        return [self.filters[i].filter(float(vec[i]), dt) for i in range(len(vec))]
+
+
+# Smoothing state
+_SMOOTH_SINGLE: Optional[Tuple[_VectorEuro, _VectorEuro]] = None  # (kps10, bbox4)
+_SMOOTH_LAST_TS: Optional[float] = None
+_SMOOTH_IN_STREAM: bool = False
+
+
+def _smoothing_dt() -> float:
+    """
+    Returns the time step for smoothing in seconds.
+
+    If 'smoothing_use_fps' is True, the time step is calculated as 1.0 / fps,
+    where fps is the value of 'smoothing_fps' or 30.0 if not set.
+
+    Otherwise, the time step is the difference in seconds between the current time
+    and the last time step, or 1e-3 if the difference is less than 1e-3.
+    """
+    if getattr(modules.globals, 'smoothing_use_fps', True):
+        fps = float(getattr(modules.globals, 'smoothing_fps', 30.0) or 30.0)
+        return 1.0 / max(1.0, fps)
+    global _SMOOTH_LAST_TS
+    now = time.perf_counter()
+    if _SMOOTH_LAST_TS is None:
+        _SMOOTH_LAST_TS = now
+        return 1.0 / float(getattr(modules.globals, 'smoothing_fps', 30.0) or 30.0)
+    dt = now - _SMOOTH_LAST_TS
+    _SMOOTH_LAST_TS = now
+    return max(1e-3, dt)
+
+
+def _get_single_filters() -> Tuple[_VectorEuro, _VectorEuro]:
+    """
+    Returns a tuple of two _VectorEuro filters, for smoothing the keypoints
+    and bounding box of the face in the stream. The filters are created once
+    and stored in the _SMOOTH_SINGLE global variable to avoid repeated creation.
+    The filters are created with the values of the smoothing_min_cutoff,
+    smoothing_beta, and smoothing_dcutoff attributes of the modules.globals
+    object, which can be set in the Advanced Settings popup.
+    """
+
+    global _SMOOTH_SINGLE
+    if _SMOOTH_SINGLE is None:
+        mc = float(getattr(modules.globals, 'smoothing_min_cutoff', 1.0))
+        beta = float(getattr(modules.globals, 'smoothing_beta', 0.0))
+        dc = float(getattr(modules.globals, 'smoothing_dcutoff', 1.0))
+        _SMOOTH_SINGLE = (_VectorEuro(10, mc, beta, dc), _VectorEuro(4, mc, beta, dc))
+    return _SMOOTH_SINGLE
+
+
+def _auto_canny(gray: np.ndarray, sigma: float = 0.33) -> np.ndarray:
+    """
+    Automatically apply optimal lower and upper thresholds to the Canny edge detector.
+
+    Args:
+        gray (np.ndarray): Input grayscale image
+        sigma (float, optional): Standard deviation of Gaussian distribution. Defaults to 0.33.
+
+    Returns:
+        np.ndarray: Output binary image containing detected edges
+    """
+
+    v = np.median(gray)
+    lower = int(max(0, (1.0 - sigma) * v))
+    upper = int(min(255, (1.0 + sigma) * v))
+    return cv2.Canny(gray, lower, upper)
+
+
+def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: float = 0.12) -> Tuple[int, int, int, int]:
+    """
+    Expand a bounding box by a given padding factor.
+
+    Args:
+        bbox (Tuple[float, float, float, float]): Bounding box coordinates (x1, y1, x2, y2)
+        w (int): Width of the image
+        h (int): Height of the image
+        pad (float): Padding factor (default = 0.12)
+
+    Returns:
+        Tuple[int, int, int, int]: Expanded bounding box coordinates (xi1, yi1, xi2, yi2)
+    """
+    x1, y1, x2, y2 = map(float, bbox)
+    bw = x2 - x1
+    bh = y2 - y1
+    x1 -= bw * pad
+    y1 -= bh * pad
+    x2 += bw * pad
+    y2 += bh * pad
+    xi1 = max(0, int(math.floor(x1)))
+    yi1 = max(0, int(math.floor(y1)))
+    xi2 = min(w, int(math.ceil(x2)))
+    yi2 = min(h, int(math.ceil(y2)))
+    if xi2 <= xi1 or yi2 <= yi1:
+        return 0, 0, w, h
+    return xi1, yi1, xi2, yi2
+
+
+def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
+    """
+    Preserves foreground occluders (e.g., hands, props) by reinstating
+    original pixels where strong edges present in the original are missing
+    in the swapped output. Enabled by default.
+
+    The detection process is based on edge differences between the original and swapped frames.
+    The edges are detected using the Canny edge detector after applying a bilateral filter to reduce noise.
+    The edges are then dilated to cover thin fingers/props, and the resulting mask is used to blend the original and swapped frames.
+    The blending process is soft, meaning that the original and swapped frames are weighted by the edge mask and then added together.
+    The final output is a frame that contains the original occluders, but with the swapped face.
+    """
     try:
-        resized_mouth_cutout = cv2.resize(mouth_cutout, (box_width, box_height))
-        roi = frame[min_y:max_y, min_x:max_x]
+        h, w = swapped_frame.shape[:2]
+        s = float(getattr(modules.globals, 'occlusion_sensitivity', 0.5) or 0.0)
+        s = 0.0 if s < 0.0 else (1.0 if s > 1.0 else s)
+        sigma = max(0.1, min(0.5, 0.5 - 0.35 * s))
+        k_factor = 0.012 + 0.028 * s
+        b_factor = 0.012 + 0.028 * s
+        pctl = 90.0 - 40.0 * s
+        # Derive ROI from face bbox; fall back to full frame
+        if hasattr(target_face, 'bbox') and target_face.bbox is not None:
+            rx1, ry1, rx2, ry2 = _expand_bbox(tuple(target_face.bbox), w, h, pad=0.12)
+        else:
+            rx1, ry1, rx2, ry2 = 0, 0, w, h
 
-        if roi.shape != resized_mouth_cutout.shape:
-            resized_mouth_cutout = cv2.resize(
-                resized_mouth_cutout, (roi.shape[1], roi.shape[0])
-            )
+        roi_o = original_frame[ry1:ry2, rx1:rx2]
+        roi_s = swapped_frame[ry1:ry2, rx1:rx2]
+        if roi_o.size == 0 or roi_s.size == 0:
+            return swapped_frame
 
-        color_corrected_mouth = apply_color_transfer(resized_mouth_cutout, roi)
+        # Edge-based occlusion detection: edges in original missing in swapped
+        gray_o = cv2.cvtColor(roi_o, cv2.COLOR_BGR2GRAY)
+        gray_s = cv2.cvtColor(roi_s, cv2.COLOR_BGR2GRAY)
+        # Light denoise to stabilize edges
+        gray_o = cv2.bilateralFilter(gray_o, 5, 75, 75)
+        gray_s = cv2.bilateralFilter(gray_s, 5, 75, 75)
 
-        # Use the provided mouth polygon to create the mask
-        polygon_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
-        adjusted_polygon = mouth_polygon - [min_x, min_y]
-        cv2.fillPoly(polygon_mask, [adjusted_polygon], 255)
+        e_o = _auto_canny(gray_o, sigma=sigma)
+        e_s = _auto_canny(gray_s, sigma=sigma)
+        missing = cv2.subtract(e_o, e_s)  # edges present in original but not in swapped
 
-        # Apply feathering to the polygon mask
-        feather_amount = min(
-            30,
-            box_width // modules.globals.mask_feather_ratio,
-            box_height // modules.globals.mask_feather_ratio,
-        )
-        feathered_mask = cv2.GaussianBlur(
-            polygon_mask.astype(float), (0, 0), feather_amount
-        )
-        feathered_mask = feathered_mask / feathered_mask.max()
+        # Expand to cover thin fingers/props; kernel scales with ROI size
+        k = max(3, int(k_factor * max(roi_o.shape[0], roi_o.shape[1])))
+        if k % 2 == 0:
+            k += 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        occ = cv2.dilate(missing, kernel)
 
-        face_mask_roi = face_mask[min_y:max_y, min_x:max_x]
-        combined_mask = feathered_mask * (face_mask_roi / 255.0)
+        # Optional gating by color difference to avoid over-preservation
+        diff = cv2.absdiff(roi_o, roi_s)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        # Normalize and threshold softly
+        thr = max(5, int(np.percentile(diff_gray, pctl)))
+        diff_mask = (diff_gray > thr).astype(np.uint8) * 255
+        occ = cv2.bitwise_and(occ, diff_mask)
 
-        combined_mask = combined_mask[:, :, np.newaxis]
-        blended = (
-            color_corrected_mouth * combined_mask + roi * (1 - combined_mask)
-        ).astype(np.uint8)
+        # Soften to alpha matte
+        b = max(3, int(b_factor * max(roi_o.shape[0], roi_o.shape[1])))
+        if b % 2 == 0:
+            b += 1
+        alpha = cv2.GaussianBlur(occ, (b, b), 0).astype(np.float32) / 255.0
+        alpha = np.clip(alpha, 0.0, 1.0)
+        alpha3 = np.repeat(alpha[:, :, None], 3, axis=2)
 
-        # Apply face mask to blended result
-        face_mask_3channel = (
-            np.repeat(face_mask_roi[:, :, np.newaxis], 3, axis=2) / 255.0
-        )
-        final_blend = blended * face_mask_3channel + roi * (1 - face_mask_3channel)
+        blended = (roi_o.astype(np.float32) * alpha3 + roi_s.astype(np.float32) * (1.0 - alpha3))
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+        out = swapped_frame.copy()
+        out[ry1:ry2, rx1:rx2] = blended
+        return out
+    except Exception:
+        return swapped_frame
 
-        frame[min_y:max_y, min_x:max_x] = final_blend.astype(np.uint8)
-    except Exception as e:
+
+def _smooth_face_inplace(face: Face, dt: float) -> None: # type: ignore
+    """Smooths the face landmarks and bounding box of a face using a
+    single-pole IIR filter.
+
+    Args:
+        face (Face): The face containing the landmarks and bounding box to smooth.
+        dt (float): The time step for the filter.
+
+    Returns:
+        None
+    """
+    try:
+        kps = getattr(face, 'kps', None)
+        bbox = getattr(face, 'bbox', None)
+        if kps is None and bbox is None:
+            return
+        kpsf, bboxf = _get_single_filters()
+        if kps is not None:
+            flat = [float(v) for v in kps.flatten().tolist()]
+            out = kpsf.filter(flat, dt)
+            face.kps = np.asarray(out, dtype=np.float32).reshape(-1, 2)  # type: ignore[attr-defined]
+        if bbox is not None:
+            bb = [float(b) for b in bbox]
+            outb = bboxf.filter(bb, dt)
+            face.bbox = np.asarray(outb, dtype=np.float32)  # type: ignore[attr-defined]
+    except Exception:
+        # Be robust: if smoothing fails, skip without breaking swap
         pass
-
-    return frame
-
-def create_face_mask(face: Face, frame: Frame) -> np.ndarray: # type: ignore
-    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-    landmarks = face.landmark_2d_106
-    if landmarks is not None:
-        landmarks = landmarks.astype(np.int32)
-
-        right_side_face = landmarks[0:16]
-        left_side_face = landmarks[17:32]
-        # right_eye = landmarks[33:42]
-        right_eye_brow = landmarks[43:51]
-        # left_eye = landmarks[87:96]
-        left_eye_brow = landmarks[97:105]
-
-        right_eyebrow_top = np.min(right_eye_brow[:, 1])
-        left_eyebrow_top = np.min(left_eye_brow[:, 1])
-        eyebrow_top = min(right_eyebrow_top, left_eyebrow_top)
-
-        face_top = np.min([right_side_face[0, 1], left_side_face[-1, 1]])
-        forehead_height = face_top - eyebrow_top
-        extended_forehead_height = int(forehead_height * 5.0)
-
-        forehead_left = right_side_face[0].copy()
-        forehead_right = left_side_face[-1].copy()
-        forehead_left[1] -= extended_forehead_height
-        forehead_right[1] -= extended_forehead_height
-
-        face_outline = np.vstack(
-            [
-                [forehead_left],
-                right_side_face,
-                left_side_face[::-1],
-                [forehead_right],
-            ]
-        )
-
-        padding = int(
-            np.linalg.norm(right_side_face[0] - left_side_face[-1]) * 0.05
-        )
-
-        hull = cv2.convexHull(face_outline)
-        hull_padded = []
-        for point in hull:
-            x, y = point[0]
-            center = np.mean(face_outline, axis=0)
-            direction = np.array([x, y]) - center
-            direction = direction / np.linalg.norm(direction)
-            padded_point = np.array([x, y]) + direction * padding
-            hull_padded.append(padded_point)
-
-        hull_padded = np.array(hull_padded, dtype=np.int32)
-
-        cv2.fillConvexPoly(mask, hull_padded, 255)
-
-        mask = cv2.GaussianBlur(mask, (5, 5), 3)
-
-    return mask
-
-
-def get_foreground_mask(frame: Frame) -> np.ndarray:
-    """Return a binary mask for prominent foreground objects with improved sensitivity."""
-    global SEGMENTER
-    if SEGMENTER is None:
-        SEGMENTER = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
-
-    results = SEGMENTER.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    if results.segmentation_mask is None:
-        return np.zeros(frame.shape[:2], dtype=np.uint8)
-
-    # Increase sensitivity by adjusting the threshold
-    mask = (results.segmentation_mask > 0.3).astype(np.uint8) * 255
-    return mask
-
-
-def apply_color_transfer(source, target):
-    source = cv2.cvtColor(source, cv2.COLOR_BGR2LAB).astype("float32")
-    target = cv2.cvtColor(target, cv2.COLOR_BGR2LAB).astype("float32")
-
-    source_mean, source_std = cv2.meanStdDev(source)
-    target_mean, target_std = cv2.meanStdDev(target)
-
-    source_mean = source_mean.reshape(1, 1, 3)
-    source_std = source_std.reshape(1, 1, 3)
-    target_mean = target_mean.reshape(1, 1, 3)
-    target_std = target_std.reshape(1, 1, 3)
-
-    # Avoid division by zero by adding epsilon
-    epsilon = 1e-6
-    safe_source_std = np.where(source_std < epsilon, epsilon, source_std)
-    source = (source - source_mean) * (target_std / safe_source_std) + target_mean
-
-    # Remove NaNs/Infs before casting
-    source = np.nan_to_num(source, nan=0.0, posinf=255.0, neginf=0.0)
-    return cv2.cvtColor(np.clip(source, 0, 255).astype("uint8"), cv2.COLOR_LAB2BGR)
 
 
 def pre_check() -> bool:
@@ -738,33 +377,38 @@ def pre_check() -> bool:
 
 
 def pre_start() -> bool:
-    global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
-    STREAM_SOURCE_FACE = None
-    STREAM_FRAME_IDX = 0
-    # Reset function-static cache used by ``process_frame_stream`` so that
-    # frame indexes start from ``0`` for each new run. Without this the
-    # index could carry over from a previous preview or run which results
-    # in mismatched frame ids when mapping faces. This caused the mapped
-    # faces logic to never find a matching frame and therefore no faces
-    # were swapped in the final output.
-    if hasattr(process_frame_stream, "cache"):
-        process_frame_stream.cache = {
-            "source_face": None,
-            "frame_idx": 0,
-        }
-    if not modules.globals.map_faces and not is_image(modules.globals.source_path):
-        update_status('Select an image for source path.', NAME)
+    # --- No changes needed in pre_start ---
+    if not modules.globals.source_path or not modules.globals.target_path:
+        update_status('Source and target paths must be set.', NAME)
         return False
-    elif not modules.globals.map_faces and get_combined_source_face(modules.globals.source_path) is None:
-        update_status('No face in source path detected.', NAME)
+    if not is_image(modules.globals.source_path) and not is_video(modules.globals.source_path):
+        update_status('Source path must be an image or video.', NAME)
         return False
     if not is_image(modules.globals.target_path) and not is_video(modules.globals.target_path):
-        update_status('Select an image or video for target path.', NAME)
+        update_status('Target path must be an image or video.', NAME)
         return False
+    if not modules.globals.map_faces:
+        source_img = cv2.imread(modules.globals.source_path)
+        if source_img is None:
+            update_status(f"Error: Could not read source image: {modules.globals.source_path}", NAME)
+            return False
+        source_face = get_one_face(source_img)
+        if source_face is None:
+            update_status(f"No face in source path detected: {modules.globals.source_path}", NAME)
+            return False
     return True
 
 
 def get_face_swapper() -> Any:
+    """
+    Returns the face swapper model instance.
+
+    This function will load the face swapper model from disk if it has not been loaded before.
+    It will first try to load the FP32 model, and if that fails, it will try to load the FP16 model.
+    If neither model is found, it will raise a FileNotFoundError.
+
+    The function is thread-safe and will block other threads until the model is loaded or an exception is thrown.
+    """
     global FACE_SWAPPER
 
     with THREAD_LOCK:
@@ -801,177 +445,214 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame: # type: ignore
+def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:  # type: ignore
+    """Blend original mouth region back using semantic parsing when available."""
+    try:
+        h, w = swapped_frame.shape[:2]
+
+        def _normalize_mask(mask: np.ndarray) -> np.ndarray:
+            """
+            Normalize a mask to the range [0.0, 1.0].
+            If the maximum value of the mask is greater than 1.0, it is divided by 255.0 to scale it down.
+            Finally, the values are clipped to the range [0.0, 1.0] to ensure it is a valid mask.
+            """
+
+            m = mask.astype(np.float32, copy=False)
+            if m.max(initial=0.0) > 1.0:
+                m = m / 255.0
+            return np.clip(m, 0.0, 1.0)
+
+        # 1) Try unified region masks if available (BiSeNet preferred)
+        if get_semantic_region_masks is not None:
+            try:
+                masks = get_semantic_region_masks(swapped_frame, target_face)  # type: ignore
+            except Exception:
+                masks = None
+            if isinstance(masks, dict):
+                composed = swapped_frame.astype(np.float32)
+                applied = False
+                # Teeth/inner mouth preservation
+                if getattr(modules.globals, 'preserve_teeth', False) and 'inner_mouth' in masks and isinstance(masks['inner_mouth'], np.ndarray):
+                    m = _normalize_mask(masks['inner_mouth'])
+                    m3 = np.repeat(m[:, :, None], 3, axis=2)
+                    composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
+                    applied = True
+                # Mouth/lips preservation
+                if getattr(modules.globals, 'mouth_mask', False) and 'mouth' in masks and isinstance(masks['mouth'], np.ndarray):
+                    m = _normalize_mask(masks['mouth'])
+                    m3 = np.repeat(m[:, :, None], 3, axis=2)
+                    composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
+                    applied = True
+                # Hairline preservation
+                if getattr(modules.globals, 'preserve_hairline', False) and 'hair' in masks and isinstance(masks['hair'], np.ndarray):
+                    m = _normalize_mask(masks['hair'])
+                    m3 = np.repeat(m[:, :, None], 3, axis=2)
+                    composed = original_frame.astype(np.float32) * m3 + composed * (1.0 - m3)
+                    applied = True
+
+                composed = np.clip(composed, 0, 255).astype(np.uint8)
+                if applied:
+                    if getattr(modules.globals, 'show_mouth_mask_box', False):
+                        try:
+                            to_draw = []
+                            if getattr(modules.globals, 'mouth_mask', False) and 'mouth' in masks:
+                                to_draw.append(masks['mouth'])
+                            if getattr(modules.globals, 'preserve_teeth', False) and 'inner_mouth' in masks:
+                                to_draw.append(masks['inner_mouth'])
+                            if getattr(modules.globals, 'preserve_hairline', False) and 'hair' in masks:
+                                to_draw.append(masks['hair'])
+                            for ms in to_draw:
+                                vis = (_normalize_mask(ms) * 255).astype(np.uint8)
+                                contours, _ = cv2.findContours(vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                cv2.drawContours(composed, contours, -1, (0, 255, 0), 2)
+                        except Exception:
+                            pass
+                    return composed
+
+        # 1b) Try single semantic mouth mask (MediaPipe path)
+        mask = None
+        if get_semantic_mouth_mask is not None:
+            try:
+                mask = get_semantic_mouth_mask(swapped_frame, target_face)
+            except Exception:
+                mask = None
+        if isinstance(mask, np.ndarray) and mask.shape[:2] == (h, w) and getattr(modules.globals, 'mouth_mask', False):
+            mask = _normalize_mask(mask)
+            feather = int(max(3, max(w, h) / max(float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8), 1.0)))
+            if feather % 2 == 0:
+                feather += 1
+            if feather >= 3:
+                mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+                mask = _normalize_mask(mask)
+            mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
+            composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
+            composed = np.clip(composed, 0, 255).astype(np.uint8)
+            if getattr(modules.globals, 'show_mouth_mask_box', False):
+                try:
+                    vis = (mask * 255).astype(np.uint8)
+                    contours, _ = cv2.findContours(vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(composed, contours, -1, (0, 255, 0), 2)
+                except Exception:
+                    pass
+            return composed
+
+        # 2) Fallback: ellipse heuristic
+        down = float(getattr(modules.globals, 'mask_down_size', 0.5) or 0.5)
+        size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
+        feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
+
+        ds_w = max(1, int(w * down))
+        ds_h = max(1, int(h * down))
+        mask_small = np.zeros((ds_h, ds_w), dtype=np.float32)
+
+        has_kps = hasattr(target_face, 'kps') and target_face.kps is not None
+        if has_kps:
+            kps = np.array(target_face.kps, dtype=np.float32)
+            lm_left = kps[3]
+            lm_right = kps[4]
+            mouth_center = (lm_left + lm_right) / 2.0
+            mouth_width = float(np.linalg.norm(lm_right - lm_left))
+            mouth_height = mouth_width * 0.6
+
+            cx = float(mouth_center[0])
+            cy = float(mouth_center[1])
+            ax = max(1.0, (mouth_width * 0.5) * size_scale)
+            ay = max(1.0, (mouth_height * 0.5) * size_scale)
+        else:
+            if hasattr(target_face, 'bbox') and target_face.bbox is not None:
+                x1, y1, x2, y2 = map(float, target_face.bbox)
+            else:
+                x1, y1, x2, y2 = 0.0, 0.0, float(w), float(h)
+            cx = (x1 + x2) / 2.0
+            cy = y1 + (y2 - y1) * 0.72
+            ax = max(1.0, (x2 - x1) * 0.20 * size_scale)
+            ay = max(1.0, (y2 - y1) * 0.14 * size_scale)
+
+        cx_ds = int(round(cx * down))
+        cy_ds = int(round(cy * down))
+        ax_ds = max(1, int(round(ax * down)))
+        ay_ds = max(1, int(round(ay * down)))
+        cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, (255, 255, 255), -1)
+        mask_small = _normalize_mask(mask_small)
+
+        feather = max(1, int(max(ax_ds, ay_ds) / max(feather_ratio, 1.0)))
+        if feather % 2 == 0:
+            feather += 1
+        if feather >= 3:
+            mask_small = cv2.GaussianBlur(mask_small, (feather, feather), 0)
+            mask_small = _normalize_mask(mask_small)
+
+        mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask = _normalize_mask(mask)
+        mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
+        composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
+        composed = np.clip(composed, 0, 255).astype(np.uint8)
+
+        if getattr(modules.globals, 'show_mouth_mask_box', False):
+            cv2.ellipse(
+                composed,
+                (int(round(cx)), int(round(cy))),
+                (int(round(ax)), int(round(ay))),
+                0, 0, 360, (0, 255, 0), 2,
+            )
+        return composed
+    except Exception as e:
+        update_status(f"Mouth mask failed: {e}", NAME)
+        return swapped_frame
+
+
+def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:  # pyright: ignore[reportInvalidTypeForm]
+    # --- No changes needed in swap_face ---
+    """
+    Replace the face in the temp_frame with the target_face, using the source_face as reference.
+
+    Args:
+        source_face (Face): The face to be replaced in temp_frame.
+        target_face (Face): The face to replace the source_face with.
+        temp_frame (Frame): The frame in which the replacement will take place.
+
+    Returns:
+        Frame: The frame with the replaced face.
+    """
     swapper = get_face_swapper()
     if swapper is None:
+        # Handle case where model failed to load
         update_status("Face swapper model not loaded, skipping swap.", NAME)
         return temp_frame
 
-    swapped_frame = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    original_frame = temp_frame.copy()
+    # Optional smoothing on target landmarks/bbox
+    if getattr(modules.globals, 'smoothing_enabled', False) and not getattr(modules.globals, 'many_faces', False):
+        if (not getattr(modules.globals, 'smoothing_stream_only', True)) or _SMOOTH_IN_STREAM:
+            _smooth_face_inplace(target_face, _smoothing_dt())
 
-    apply_mouth = modules.globals.mouth_mask
-    if modules.globals.mouth_mask_segments:
-        fps = modules.globals.fps or 30.0
-        current_time = modules.globals.current_frame_idx / fps
-        apply_mouth = any(start <= current_time <= end for start, end in modules.globals.mouth_mask_segments)
+    swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
-    if apply_mouth:
-        face_mask = create_face_mask(target_face, temp_frame)
-        mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(
-            target_face, temp_frame
-        )
-
-        swapped_frame = apply_mouth_area(
-            swapped_frame, mouth_cutout, mouth_box, face_mask, lower_lip_polygon
-        )
-
-        if modules.globals.show_mouth_mask_box:
-            mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
-            swapped_frame = draw_mouth_mask_visualization(
-                swapped_frame, target_face, mouth_mask_data
-            )
-
-    if modules.globals.foreground_protection:
-        # Protect non-face foreground elements using a segmentation mask
-        fg_mask = get_foreground_mask(temp_frame)
-        face_mask = create_face_mask(target_face, temp_frame)
-        occlusion_mask = cv2.bitwise_and(fg_mask, cv2.bitwise_not(face_mask))
-        occlusion_mask_3c = cv2.merge([occlusion_mask] * 3) / 255.0
-        swapped_frame = (
-            swapped_frame * (1 - occlusion_mask_3c) + temp_frame * occlusion_mask_3c
-        ).astype(np.uint8)
-
-    return swapped_frame
+    # Apply region preservation if any toggle is enabled
+    if (
+        getattr(modules.globals, 'mouth_mask', False)
+        or getattr(modules.globals, 'preserve_teeth', False)
+        or getattr(modules.globals, 'preserve_hairline', False)
+    ):
+        swapped = _apply_mouth_mask(original_frame, swapped, target_face)
+    # Preserve foreground occluders (hands/props) by reinstating
+    # original pixels where strong edges were removed by swapping
+    if getattr(modules.globals, 'occlusion_aware_compositing', True):
+        swapped = _apply_occlusion_preserve(original_frame, swapped, target_face)
+    return swapped
 
 
-def swap_face_stable(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:  # type: ignore
-    """Ultra fast swap prioritising raw FPS."""
-    swapper = get_face_swapper()
-    if swapper is None:
-        return temp_frame
-    return swapper.get(temp_frame, target_face, source_face, paste_back=True)
+def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # pyright: ignore[reportInvalidTypeForm]
+    """
+    Replace the face in the temp_frame with the target_face, using the source_face as reference.
 
+    Args:
+        source_face (Face): The face to be replaced in temp_frame.
+        temp_frame (Frame): The frame in which the replacement will take place.
 
-def fix_forehead_hair_issue(swapped_frame: Frame, target_face: Face, original_frame: Frame) -> Frame:  # type: ignore
-    """Blend the forehead from the original frame back to reduce hair artifacts."""
-    try:
-        bbox = target_face.bbox.astype(int)
-        x1, y1, x2, y2 = bbox
-        h, w = swapped_frame.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        if x2 <= x1 or y2 <= y1:
-            return swapped_frame
-
-        forehead_height = int((y2 - y1) * 0.35)
-        forehead_y2 = y1 + forehead_height
-        if forehead_y2 > y1:
-            swapped_forehead = swapped_frame[y1:forehead_y2, x1:x2]
-            original_forehead = original_frame[y1:forehead_y2, x1:x2]
-            mask = np.ones(swapped_forehead.shape[:2], dtype=np.float32)
-            mask = cv2.GaussianBlur(mask, (31, 31), 10)
-            mask = mask[:, :, np.newaxis]
-            blended = (swapped_forehead * 0.3 + original_forehead * 0.7).astype(np.uint8)
-            swapped_frame[y1:forehead_y2, x1:x2] = blended
-    except Exception:
-        pass
-    return swapped_frame
-
-
-def swap_face_ultra_fast(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:  # type: ignore
-    """Swap with additional forehead protection and mouth masking."""
-    swapper = get_face_swapper()
-    if swapper is None:
-        return temp_frame
-
-    swapped_frame = swapper.get(temp_frame, target_face, source_face, paste_back=True)
-    swapped_frame = fix_forehead_hair_issue(swapped_frame, target_face, temp_frame)
-    swapped_frame = improve_forehead_matching(swapped_frame, source_face, target_face, temp_frame)
-
-    if modules.globals.mouth_mask:
-        face_mask = create_face_mask(target_face, temp_frame)
-        mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(target_face, temp_frame)
-        swapped_frame = apply_mouth_area(
-            swapped_frame,
-            mouth_cutout,
-            mouth_box,
-            face_mask,
-            lower_lip_polygon,
-        )
-
-        if modules.globals.show_mouth_mask_box:
-            mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
-            swapped_frame = draw_mouth_mask_visualization(swapped_frame, target_face, mouth_mask_data)
-
-    return swapped_frame
-
-
-def create_precise_face_mask(landmarks: np.ndarray, frame_shape: tuple) -> np.ndarray:
-    """Create a mask excluding forehead and hair for refined blending."""
-    try:
-        mask = np.zeros(frame_shape, dtype=np.uint8)
-
-        jaw_line = landmarks[0:33]
-        left_eye_area = landmarks[33:42]
-        right_eye_area = landmarks[87:96]
-        left_eyebrow = landmarks[43:51]
-        right_eyebrow = landmarks[97:105]
-
-        face_contour_points = []
-        face_contour_points.extend(left_eyebrow)
-        face_contour_points.extend(right_eyebrow)
-        face_contour_points.extend(jaw_line)
-        face_contour_points = np.array(face_contour_points)
-
-        hull = cv2.convexHull(face_contour_points)
-        cv2.fillConvexPoly(mask, hull, 255)
-        mask = cv2.GaussianBlur(mask, (21, 21), 7)
-        return mask
-    except Exception:
-        return None
-
-
-def improve_forehead_matching(swapped_frame: Frame, source_face: Face, target_face: Face, original_frame: Frame) -> Frame:  # type: ignore
-    """Optionally blend only core facial features back to the original frame."""
-    try:
-        if hasattr(target_face, 'landmark_2d_106') and target_face.landmark_2d_106 is not None:
-            landmarks = target_face.landmark_2d_106.astype(np.int32)
-            mask = create_precise_face_mask(landmarks, swapped_frame.shape[:2])
-            if mask is not None:
-                mask_3d = mask[:, :, np.newaxis] / 255.0
-                return (swapped_frame * mask_3d + original_frame * (1 - mask_3d)).astype(np.uint8)
-
-        bbox = target_face.bbox.astype(int)
-        x1, y1, x2, y2 = bbox
-        h, w = swapped_frame.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        if x2 <= x1 or y2 <= y1:
-            return swapped_frame
-
-        forehead_height = int((y2 - y1) * 0.25)
-        face_start_y = y1 + forehead_height
-        if face_start_y < y2:
-            swapped_area = swapped_frame[face_start_y:y2, x1:x2]
-            original_area = original_frame[face_start_y:y2, x1:x2]
-            mask = np.ones(swapped_area.shape[:2], dtype=np.float32)
-            mask = cv2.GaussianBlur(mask, (15, 15), 5)
-            mask = mask[:, :, np.newaxis]
-            swapped_frame[face_start_y:y2, x1:x2] = swapped_area * 0.5 + original_area * 0.5
-        return swapped_frame
-    except Exception:
-        return swapped_frame
-
-def process_frame(source_face: Face, temp_frame: Frame) -> Frame:  # type: ignore
-    # --- No changes needed in process_frame ---
-    # Ensure the frame is in RGB format if color correction is enabled
-    # Note: InsightFace swapper often expects BGR by default. Double-check if color issues appear.
-    # If color correction is needed *before* swapping and insightface needs BGR:
-    # original_was_bgr = True # Assume input is BGR
-    # if modules.globals.color_correction:
-    #     temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
-    #     original_was_bgr = False # Now it's RGB
-
+    Returns:
+        Frame: The frame with the replaced face.
+    """
     if modules.globals.many_faces:
         many_faces = get_many_faces(temp_frame)
         if many_faces:
@@ -980,48 +661,53 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:  # type: ignor
     else:
         target_face = get_one_face(temp_frame)
         if target_face:
-            temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
-
-    # Convert back if necessary (example, might not be needed depending on workflow)
-    # if modules.globals.color_correction and not original_was_bgr:
-    #      temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_RGB2BGR)
-
+            temp_frame = swap_face(source_face, target_face, temp_frame)
     return temp_frame
 
 
-def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
-    """Swap faces according to mapping rules.
-
-    When ``map_faces`` is enabled it now takes priority over ``many_faces`` so
-    that each source/target pair is honoured even if ``many_faces`` is also
-    active.
+def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
+    # --- No changes needed in process_frame_v2 ---
+    # (Assuming swap_face handles the potential None return from get_face_swapper)
     """
-    try:
-        if isinstance(frame_id, str):
-            modules.globals.current_frame_idx = int(Path(frame_id).stem)
-        else:
-            modules.globals.current_frame_idx = int(frame_id)
-    except Exception:
-        pass
+    Process a frame (image or video) by replacing the detected face(s) with the target face(s) as specified in the source-target map.
 
-    # process image targets -------------------------------------------------
+    Args:
+        temp_frame (Frame): The frame in which the replacement will take place.
+        temp_frame_path (str): The path of the frame being processed, required for video processing.
+
+    Returns:
+        Frame: The frame with the replaced face(s).
+    """
     if is_image(modules.globals.target_path):
-        if modules.globals.map_faces:
-            for map_entry in modules.globals.source_target_map:
+        if modules.globals.many_faces:
+            source_face = default_source_face()
+            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
+                target_face = map_entry['target']['face']
+                if target_face is not None:
+                    temp_frame = swap_face(source_face, target_face, temp_frame)
+
+        elif not modules.globals.many_faces:
+            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
                 if "source" in map_entry:
                     source_face = map_entry['source']['face']
                     target_face = map_entry['target']['face']
-                    temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
-        elif modules.globals.many_faces:
-            source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map:
-                target_face = map_entry['target']['face']
-                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
+                    if source_face is not None and target_face is not None:
+                        temp_frame = swap_face(source_face, target_face, temp_frame)
 
-    # process video targets --------------------------------------------------
     elif is_video(modules.globals.target_path):
-        if modules.globals.map_faces:
-            for map_entry in modules.globals.source_target_map:
+        if modules.globals.many_faces:
+            source_face = default_source_face()
+            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
+                target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
+
+                for frame in target_frame:
+                    if frame is not None:
+                        for target_face in frame['faces']:
+                            if target_face is not None:
+                                temp_frame = swap_face(source_face, target_face, temp_frame)
+
+        elif not modules.globals.many_faces:
+            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
                 if "source" in map_entry:
                     target_frame = [
                         f for f in map_entry['target_faces_in_frame']
@@ -1029,62 +715,54 @@ def process_frame_v2(temp_frame: Frame, frame_id: Any = "") -> Frame:
                     ]
                     source_face = map_entry['source']['face']
                     for frame in target_frame:
-                        for target_face in frame['faces']:
-                            temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
-        elif modules.globals.many_faces:
-            source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map:
-                target_frame = [
-                    f for f in map_entry['target_faces_in_frame']
-                    if (f.get('location') == frame_id or f.get('frame') == frame_id)
-                ]
-                for frame in target_frame:
-                    for target_face in frame['faces']:
-                        temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
-
-    # fallback for live feed -------------------------------------------------
-    else:
+                        if frame is not None:
+                            for target_face in frame['faces']:
+                                if target_face is not None:
+                                    temp_frame = swap_face(source_face, target_face, temp_frame)
+    else: # Fallback for neither image nor video (e.g., live feed?)
         detected_faces = get_many_faces(temp_frame)
-        if modules.globals.map_faces and detected_faces and hasattr(modules.globals, 'simple_map') and modules.globals.simple_map:
-            if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
-                for detected_face in detected_faces:
-                    closest_centroid_index, _ = find_closest_centroid(
-                        modules.globals.simple_map['target_embeddings'],
-                        detected_face.normed_embedding,
-                    )
-                    temp_frame = swap_face_ultra_fast(
-                        modules.globals.simple_map['source_faces'][closest_centroid_index],
-                        detected_face,
-                        temp_frame,
-                    )
-            else:
-                detected_faces_centroids = [face.normed_embedding for face in detected_faces]
-                for i, target_embedding in enumerate(modules.globals.simple_map['target_embeddings']):
-                    closest_centroid_index, _ = find_closest_centroid(
-                        detected_faces_centroids, target_embedding
-                    )
-                    if closest_centroid_index < len(detected_faces):
-                        temp_frame = swap_face_ultra_fast(
-                            modules.globals.simple_map['source_faces'][i],
-                            detected_faces[closest_centroid_index],
-                            temp_frame,
-                        )
-        elif modules.globals.many_faces and detected_faces:
-            source_face = default_source_face()
-            for target_face in detected_faces:
-                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
-        elif detected_faces:
-            target_face = detected_faces[0]
-            source_face = default_source_face()
-            if source_face:
-                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
+        if modules.globals.many_faces:
+            if detected_faces is not None:
+                source_face = default_source_face()
+                for target_face in detected_faces:
+                    if target_face is not None:
+                        temp_frame = swap_face(source_face, target_face, temp_frame)
 
+        elif not modules.globals.many_faces:
+            if detected_faces is not None:
+                if hasattr(modules.globals, 'simple_map') and modules.globals.simple_map: # Check simple_map exists
+                    if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
+                        for detected_face in detected_faces:
+                            if detected_face is not None:
+                                closest_centroid_index, _ = find_closest_centroid(modules.globals.simple_map['target_embeddings'], detected_face.normed_embedding)
+                                temp_frame = swap_face(modules.globals.simple_map['source_faces'][closest_centroid_index], detected_face, temp_frame)
+                    else:
+                        detected_faces_centroids = [face.normed_embedding for face in detected_faces]
+                        i = 0
+                        for target_embedding in modules.globals.simple_map['target_embeddings']:
+                            closest_centroid_index, _ = find_closest_centroid(detected_faces_centroids, target_embedding)
+                            # Ensure index is valid before accessing detected_faces
+                            if closest_centroid_index < len(detected_faces):
+                                temp_frame = swap_face(modules.globals.simple_map['source_faces'][i], detected_faces[closest_centroid_index], temp_frame)
+                            i += 1
     return temp_frame
 
 
 def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any = None) -> None:
     # --- No changes needed in process_frames ---
     # Note: Ensure get_one_face is called only once if possible for efficiency if !map_faces
+    """
+    Process frames by replacing the face(s) in each frame with the target face(s) as specified in the source-target map.
+
+    Args:
+        source_path (str): The path of the source image or video.
+        temp_frame_paths (List[str]): A list of paths to the frames to be processed.
+        progress (Any): Optional progress object to track the progress of the processing.
+
+    Returns:
+        None
+    """
+
     source_face = None
     if not modules.globals.map_faces:
         source_face = get_combined_source_face(source_path)
@@ -1128,6 +806,27 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
 def process_image(source_path: str, target_path: str, output_path: str) -> None:
     # --- No changes needed in process_image ---
     # Note: Added checks for successful image reads and face detection
+    """
+    Processes an image by enhancing or swapping faces.
+
+    This function attempts to read the target image from the specified path.
+    If face mapping is disabled, it reads the source image and attempts to detect
+    a face within it. If successful, it processes the target image using the detected
+    face from the source image. If face mapping is enabled, the function processes
+    the target image directly.
+
+    Args:
+        source_path (str): The file path to the source image.
+        target_path (str): The file path to the target image.
+        output_path (str): The file path where the processed image will be saved.
+
+    Returns:
+        None: The processed image is saved to the specified output path.
+
+    Raises:
+        None: Does not raise exceptions but logs errors if reading or processing fails.
+    """
+
     target_frame = cv2.imread(target_path) # Read original target for processing
     if target_frame is None:
         update_status(f"Error: Could not read target image: {target_path}", NAME)
@@ -1155,6 +854,16 @@ def process_image(source_path: str, target_path: str, output_path: str) -> None:
 
 def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
     # --- No changes needed in process_video ---
+    """
+    Process a video frame by frame.
+
+    Args:
+        source_path (str): Path to the source video.
+        temp_frame_paths (List[str]): Paths to the temporary frames of the video.
+
+    Returns:
+        None: The processed video is saved back to the original source path.
+    """
     if modules.globals.map_faces and modules.globals.many_faces:
         update_status('Many faces enabled. Using first source image (if applicable in v2). Processing...', NAME)
     # The core processing logic is delegated, which is good.
@@ -1162,55 +871,41 @@ def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
 
 def process_frame_stream(source_path: str, frame: Frame) -> Frame:
     """
-    Enhance faces in a live frame stream.
+    Process a frame from a video stream.
 
-    Function-static storage is used to avoid using global variables.
+    This function is intended to be used as a callback for video stream processing.
+    It will read the source image if it has not already been read, and then use it to
+    process the frame. If the source image is not provided, or could not be read, it
+    will return the original frame.
+
+    Args:
+        source_path (str): Path to the source image.
+        frame (Frame): The frame to be processed.
+
+    Returns:
+        Frame: The processed frame.
     """
-    # Function-static storage to avoid globals
-    if not hasattr(process_frame_stream, "cache"):
-        process_frame_stream.cache = {
-            "source_face": None,  # The source face for non-mapped processing
-            "frame_idx": 0,  # The current frame index
-        }
-
-    cache = process_frame_stream.cache
-
+    global STREAM_SOURCE_FACE
+    global _SMOOTH_IN_STREAM
     if not modules.globals.map_faces:
-        # If not mapping faces, use the first source face found
-        if cache["source_face"] is None:
-            img = cv2.imread(source_path)
-            if img is not None:
-                cache["source_face"] = get_one_face(img)
-
-        if cache["source_face"] is not None:
-            # Process the frame using the source face
-            return process_frame(cache["source_face"], frame)
-        # If no source face, return the original frame
+        if STREAM_SOURCE_FACE is None:
+            source_img = cv2.imread(source_path)
+            if source_img is not None:
+                STREAM_SOURCE_FACE = get_one_face(source_img)
+        if STREAM_SOURCE_FACE is not None:
+            # Mark smoothing context as streaming for this call only
+            prev_flag = _SMOOTH_IN_STREAM
+            _SMOOTH_IN_STREAM = True
+            try:
+                return process_frame(STREAM_SOURCE_FACE, frame)
+            finally:
+                _SMOOTH_IN_STREAM = prev_flag
         return frame
     else:
-        # Process the frame using the frame index
-        processed = process_frame_v2(frame, cache["frame_idx"])
-        # Increment the frame index for the next iteration
-        cache["frame_idx"] += 1
-        return processed
-
-
-# STREAM_SOURCE_FACE = None
-# STREAM_FRAME_IDX = 0
-
-
-# def process_frame_stream(source_path: str, frame: Frame) -> Frame:
-#     global STREAM_SOURCE_FACE, STREAM_FRAME_IDX
-#     if not modules.globals.map_faces:
-#         if STREAM_SOURCE_FACE is None:
-#             STREAM_SOURCE_FACE = get_combined_source_face(source_path)
-#         if STREAM_SOURCE_FACE is not None:
-#             modules.globals.current_frame_idx = STREAM_FRAME_IDX
-#             STREAM_FRAME_IDX += 1
-#             return process_frame(STREAM_SOURCE_FACE, frame)
-#         return frame
-#     else:
-#         modules.globals.current_frame_idx = STREAM_FRAME_IDX
-#         processed = process_frame_v2(frame, STREAM_FRAME_IDX)
-#         STREAM_FRAME_IDX += 1
-#         return processed
+        # Streaming context also applies to v2 path
+        prev_flag = _SMOOTH_IN_STREAM
+        _SMOOTH_IN_STREAM = True
+        try:
+            return process_frame_v2(frame)
+        finally:
+            _SMOOTH_IN_STREAM = prev_flag

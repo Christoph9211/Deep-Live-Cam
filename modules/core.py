@@ -13,6 +13,11 @@ import shutil
 import argparse
 import torch
 import onnxruntime
+try:
+    # Reduce verbose ORT logs (e.g., feedback manager/info-level messages)
+    onnxruntime.set_default_logger_severity(2)  # 0=VERBOSE,1=INFO,2=WARNING,3=ERROR,4=FATAL
+except Exception:
+    pass
 import tensorflow
 
 import modules.globals
@@ -69,6 +74,18 @@ def parse_args() -> None:
     program.add_argument('--max-memory', help='maximum amount of RAM in GB', dest='max_memory', type=int, default=suggest_max_memory())
     program.add_argument('--execution-provider', help='execution provider', dest='execution_provider', default=['cpu'], choices=suggest_execution_providers(), nargs='+')
     program.add_argument('--execution-threads', help='number of execution threads', dest='execution_threads', type=int, default=suggest_execution_threads())
+    program.add_argument('--segmenter-backend', help='semantic segmenter backend', dest='segmenter_backend', default='auto', choices=['auto', 'mediapipe', 'bisenet'])
+    # Landmark smoothing (One-Euro)
+    program.add_argument('--smoothing', help='enable One-Euro landmark smoothing', dest='smoothing_enabled', action='store_true', default=False)
+    program.add_argument('--smoothing-stream-only', help='apply smoothing only in streaming/live paths', dest='smoothing_stream_only', action='store_true', default=True)
+    program.add_argument('--smoothing-use-fps', help='use fixed FPS for smoothing dt (otherwise use wall time)', dest='smoothing_use_fps', action='store_true', default=True)
+    program.add_argument('--smoothing-fps', help='assumed FPS when --smoothing-use-fps', dest='smoothing_fps', type=float, default=30.0)
+    program.add_argument('--smoothing-min-cutoff', help='One-Euro min cutoff', dest='smoothing_min_cutoff', type=float, default=1.0)
+    program.add_argument('--smoothing-beta', help='One-Euro beta', dest='smoothing_beta', type=float, default=0.0)
+    program.add_argument('--smoothing-dcutoff', help='One-Euro derivative cutoff', dest='smoothing_dcutoff', type=float, default=1.0)
+    # Region preservation toggles
+    program.add_argument('--preserve-teeth', help='preserve original teeth/inner mouth region', dest='preserve_teeth', action='store_true', default=False)
+    program.add_argument('--preserve-hairline', help='preserve original hair/hairline region', dest='preserve_hairline', action='store_true', default=False)
     program.add_argument('-v', '--version', action='version', version=f'{modules.metadata.name} {modules.metadata.version}')
 
     # register deprecated args
@@ -113,6 +130,17 @@ def parse_args() -> None:
     modules.globals.execution_providers = decode_execution_providers(args.execution_provider)
     modules.globals.execution_threads = args.execution_threads
     modules.globals.lang = args.lang
+    modules.globals.segmenter_backend = args.segmenter_backend
+    # Smoothing globals
+    modules.globals.smoothing_enabled = args.smoothing_enabled
+    modules.globals.smoothing_stream_only = args.smoothing_stream_only
+    modules.globals.smoothing_use_fps = args.smoothing_use_fps
+    modules.globals.smoothing_fps = args.smoothing_fps
+    modules.globals.smoothing_min_cutoff = args.smoothing_min_cutoff
+    modules.globals.smoothing_beta = args.smoothing_beta
+    modules.globals.smoothing_dcutoff = args.smoothing_dcutoff
+    modules.globals.preserve_teeth = args.preserve_teeth
+    modules.globals.preserve_hairline = args.preserve_hairline
 
     #for ENHANCER tumbler:
     if 'face_enhancer' in args.frame_processor:
@@ -209,7 +237,57 @@ def update_status(message: str, scope: str = 'DLC.CORE') -> None:
         ui.update_status(message)
 
 
+def _short_flags() -> str:
+    g = modules.globals
+    flags = []
+    if getattr(g, 'mouth_mask', False):
+        flags.append('MM')
+    if getattr(g, 'preserve_teeth', False):
+        flags.append('TTH')
+    if getattr(g, 'preserve_hairline', False):
+        flags.append('HL')
+    if g.fp_ui.get('face_enhancer', False):
+        flags.append('ENH')
+    if getattr(g, 'map_faces', False):
+        flags.append('MAP')
+    if getattr(g, 'many_faces', False):
+        flags.append('MF')
+    if getattr(g, 'smoothing_enabled', False):
+        flags.append('S')
+    return ','.join(flags) if flags else 'none'
+
+
+def _print_startup_summary() -> None:
+    g = modules.globals
+    parts = [
+        f"Providers={g.execution_providers}",
+        f"Threads={g.execution_threads}",
+        f"RAM={g.max_memory}GB",
+        f"Encoder={g.video_encoder}/CRF={g.video_quality}",
+        f"Segmenter={getattr(g, 'segmenter_backend', 'auto')}",
+        f"Flags=[{_short_flags()}]",
+    ]
+    if getattr(g, 'smoothing_enabled', False):
+        parts.append(
+            f"Smoothing fps={getattr(g,'smoothing_fps',30.0)} mc={getattr(g,'smoothing_min_cutoff',1.0)} beta={getattr(g,'smoothing_beta',0.0)} dc={getattr(g,'smoothing_dcutoff',1.0)}"
+        )
+    update_status(' | '.join(parts))
+
+
 def stream_video() -> None:
+    """
+    Process a video file using the selected frame processors and save the result to a new file.
+
+    This function is similar to process_video, but it processes the video stream directly without loading it into memory.
+    This can be useful for larger videos or when memory is limited.
+
+    The video is processed in chunks of 1 frame, and the progress is displayed using tqdm.
+
+    If the --keep-audio flag is set, the audio from the original video is restored after processing the video stream.
+    Otherwise, the audio is discarded.
+
+    The temporary resources are cleaned up after processing.
+    """
     capture = cv2.VideoCapture(modules.globals.target_path)
     if not capture.isOpened():
         update_status('Failed to open video file.')
@@ -227,7 +305,13 @@ def stream_video() -> None:
 
     progress_bar_format = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
     with tqdm(total=total, desc='Processing', unit='frame', dynamic_ncols=True, bar_format=progress_bar_format) as progress:
-        progress.set_postfix({'execution_providers': modules.globals.execution_providers, 'execution_threads': modules.globals.execution_threads, 'max_memory': modules.globals.max_memory})
+        progress.set_postfix({
+            'providers': modules.globals.execution_providers,
+            'threads': modules.globals.execution_threads,
+            'mem_gb': modules.globals.max_memory,
+            'backend': getattr(modules.globals, 'segmenter_backend', 'auto'),
+            'flags': _short_flags(),
+        })
         while True:
             ret, frame = capture.read()
             if not ret:
@@ -251,6 +335,21 @@ def stream_video() -> None:
     clean_temp(modules.globals.target_path)
 
 def start() -> None:
+    """
+    Start the deep live cam process.
+
+    This function checks if the target file is an image or a video.
+    If it is an image, it processes the image using the selected frame processors.
+    If it is a video, it processes the video frame by frame using the selected frame processors.
+
+    The function also handles fps and audio.
+    If the --keep-fps flag is set, the function detects the fps of the original video and creates a new video with the same fps.
+    If the --keep-audio flag is set, the function restores the audio from the original video.
+
+    The function also cleans up the temporary resources after processing.
+
+    :return: None
+    """
     for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
         if not frame_processor.pre_start():
             return
@@ -298,7 +397,9 @@ def run() -> None:
             return
     limit_resources()
     if modules.globals.headless:
+        _print_startup_summary()
         start()
     else:
         window = ui.init(start, destroy, modules.globals.lang)
+        _print_startup_summary()
         window.mainloop()

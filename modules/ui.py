@@ -35,6 +35,7 @@ if platform.system() == "Windows":
 ROOT = None
 POPUP = None
 POPUP_LIVE = None
+POPUP_ADV = None
 ROOT_HEIGHT = 700
 ROOT_WIDTH = 600
 
@@ -110,7 +111,22 @@ def save_switch_states():
         "show_fps": modules.globals.show_fps,
         "mouth_mask": modules.globals.mouth_mask,
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
-        "foreground_protection": modules.globals.foreground_protection,
+        "mask_size": modules.globals.mask_size,
+        "mask_feather_ratio": modules.globals.mask_feather_ratio,
+        # New semantic preservation + smoothing + backend
+        "preserve_teeth": modules.globals.preserve_teeth,
+        "preserve_hairline": modules.globals.preserve_hairline,
+        "segmenter_backend": modules.globals.segmenter_backend,
+        "smoothing_enabled": modules.globals.smoothing_enabled,
+        "smoothing_stream_only": modules.globals.smoothing_stream_only,
+        "smoothing_use_fps": modules.globals.smoothing_use_fps,
+        "smoothing_fps": modules.globals.smoothing_fps,
+        "smoothing_min_cutoff": modules.globals.smoothing_min_cutoff,
+        "smoothing_beta": modules.globals.smoothing_beta,
+        "smoothing_dcutoff": modules.globals.smoothing_dcutoff,
+        # Occlusion preserve
+        "occlusion_aware_compositing": modules.globals.occlusion_aware_compositing,
+        "occlusion_sensitivity": modules.globals.occlusion_sensitivity,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -135,9 +151,24 @@ def load_switch_states():
         modules.globals.show_mouth_mask_box = switch_states.get(
             "show_mouth_mask_box", False
         )
-        modules.globals.foreground_protection = switch_states.get(
-            "foreground_protection", False
+        modules.globals.mask_size = switch_states.get("mask_size", modules.globals.mask_size)
+        modules.globals.mask_feather_ratio = switch_states.get(
+            "mask_feather_ratio", modules.globals.mask_feather_ratio
         )
+        # New semantic preservation + smoothing + backend
+        modules.globals.preserve_teeth = switch_states.get("preserve_teeth", False)
+        modules.globals.preserve_hairline = switch_states.get("preserve_hairline", False)
+        modules.globals.segmenter_backend = switch_states.get("segmenter_backend", modules.globals.segmenter_backend)
+        modules.globals.smoothing_enabled = switch_states.get("smoothing_enabled", False)
+        modules.globals.smoothing_stream_only = switch_states.get("smoothing_stream_only", True)
+        modules.globals.smoothing_use_fps = switch_states.get("smoothing_use_fps", True)
+        modules.globals.smoothing_fps = switch_states.get("smoothing_fps", modules.globals.smoothing_fps)
+        modules.globals.smoothing_min_cutoff = switch_states.get("smoothing_min_cutoff", modules.globals.smoothing_min_cutoff)
+        modules.globals.smoothing_beta = switch_states.get("smoothing_beta", modules.globals.smoothing_beta)
+        modules.globals.smoothing_dcutoff = switch_states.get("smoothing_dcutoff", modules.globals.smoothing_dcutoff)
+        # Occlusion preserve
+        modules.globals.occlusion_aware_compositing = switch_states.get("occlusion_aware_compositing", modules.globals.occlusion_aware_compositing)
+        modules.globals.occlusion_sensitivity = switch_states.get("occlusion_sensitivity", modules.globals.occlusion_sensitivity)
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
@@ -159,7 +190,17 @@ def _segments_to_str(segments):
 
 
 def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.CTk:
-    global source_label, target_label, open_mouth_label, status_label, show_fps_switch
+    """
+    Create the main window of the application.
+
+    Parameters:
+    start (Callable[[], None]): The function to call when the "Start" button is clicked.
+    destroy (Callable[[], None]): The function to call when the "Destroy" button is clicked.
+
+    Returns:
+    ctk.CTk: The main window of the application.
+    """
+    global source_label, target_label, status_label, show_fps_switch
 
     load_switch_states()
 
@@ -332,20 +373,12 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         text=_("Mouth Mask"),
         variable=mouth_mask_var,
         cursor="hand2",
-        command=lambda: setattr(modules.globals, "mouth_mask", mouth_mask_var.get()),
+        command=lambda: (
+            setattr(modules.globals, "mouth_mask", mouth_mask_var.get()),
+            save_switch_states(),
+        ),
     )
-    mouth_mask_switch.place(relx=0.1, rely=0.55)
-
-    global mouth_mask_segments_var, mouth_mask_segments_entry
-    mouth_mask_segments_var = ctk.StringVar(
-        value=_segments_to_str(modules.globals.mouth_mask_segments)
-    )
-    mouth_mask_segments_entry = ctk.CTkEntry(
-        root,
-        textvariable=mouth_mask_segments_var,
-        placeholder_text="0:5,10:15",
-    )
-    mouth_mask_segments_entry.place(relx=0.35, rely=0.55, relwidth=0.25, relheight=0.05)
+    mouth_mask_switch.place(relx=0.1, rely=0.505)
 
     show_mouth_mask_box_var = ctk.BooleanVar(value=modules.globals.show_mouth_mask_box)
     show_mouth_mask_box_switch = ctk.CTkSwitch(
@@ -353,28 +386,77 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         text=_("Show Mouth Mask Box"),
         variable=show_mouth_mask_box_var,
         cursor="hand2",
-        command=lambda: setattr(
-            modules.globals, "show_mouth_mask_box", show_mouth_mask_box_var.get()
-        ),
-    )
-    show_mouth_mask_box_switch.place(relx=0.6, rely=0.55)
-
-    foreground_protection_var = ctk.BooleanVar(value=modules.globals.foreground_protection)
-    foreground_protection_switch = ctk.CTkSwitch(
-        root,
-        text=_("Foreground Protection"),
-        variable=foreground_protection_var,
-        cursor="hand2",
         command=lambda: (
-            setattr(
-                modules.globals,
-                "foreground_protection",
-                foreground_protection_var.get(),
-            ),
+            setattr(modules.globals, "show_mouth_mask_box", show_mouth_mask_box_var.get()),
             save_switch_states(),
         ),
     )
-    foreground_protection_switch.place(relx=0.1, rely=0.50)
+    show_mouth_mask_box_switch.place(relx=0.6, rely=0.505)
+
+    # --- Mouth Mask Sliders ---
+    # Mask Size slider (0.5x - 2.0x)
+    mask_size_label = ctk.CTkLabel(
+        root,
+        text=f"Mask Size: {modules.globals.mask_size:.2f}x",
+    )
+    mask_size_label.place(relx=0.1, rely=0.54)
+
+    def on_mask_size_change(val: float):
+        # Snap to 0.05 steps for stability
+        """
+        Snap the mask size to the nearest 0.05 step for stability.
+
+        Args:
+            val (float): The new mask size value from the slider.
+
+        """
+        snapped = round(float(val) / 0.05) * 0.05
+        modules.globals.mask_size = float(snapped)
+        mask_size_label.configure(text=f"Mask Size: {modules.globals.mask_size:.2f}x")
+        save_switch_states()
+
+    mask_size_slider = ctk.CTkSlider(
+        root,
+        from_=0.5,
+        to=2.0,
+        number_of_steps=30,
+        command=on_mask_size_change,
+        width=160,
+    )
+    mask_size_slider.set(modules.globals.mask_size)
+    mask_size_slider.place(relx=0.28, rely=0.54)
+
+    # Feather Ratio slider (2 - 32)
+    feather_label = ctk.CTkLabel(
+        root,
+        text=f"Feather: {int(modules.globals.mask_feather_ratio)}",
+    )
+    feather_label.place(relx=0.6, rely=0.54)
+
+    def on_feather_change(val: float):
+        """
+        Snap the feather ratio to the nearest integer for stability.
+
+        Args:
+            val (float): The new feather ratio value from the slider.
+
+        """
+
+        new_val = max(1, int(round(val)))
+        modules.globals.mask_feather_ratio = int(new_val)
+        feather_label.configure(text=f"Feather: {modules.globals.mask_feather_ratio}")
+        save_switch_states()
+
+    feather_slider = ctk.CTkSlider(
+        root,
+        from_=2,
+        to=32,
+        number_of_steps=30,
+        command=on_feather_change,
+        width=160,
+    )
+    feather_slider.set(float(modules.globals.mask_feather_ratio))
+    feather_slider.place(relx=0.78, rely=0.54)
 
     start_button = ctk.CTkButton(
         root, text=_("Start"), cursor="hand2", command=lambda: analyze_target(start, root)
@@ -390,6 +472,12 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
         root, text=_("Preview"), cursor="hand2", command=lambda: toggle_preview()
     )
     preview_button.place(relx=0.65, rely=0.80, relwidth=0.2, relheight=0.05)
+
+    # Advanced settings popup
+    adv_button = ctk.CTkButton(
+        root, text=_("Advanced"), cursor="hand2", command=lambda: open_advanced_popup(root)
+    )
+    adv_button.place(relx=0.40, rely=0.80, relwidth=0.2, relheight=0.05)
 
     # --- Camera Selection ---
     camera_label = ctk.CTkLabel(root, text=_("Select Camera:"))
@@ -451,6 +539,138 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
 
     return root
 
+def open_advanced_popup(root: ctk.CTk) -> None:
+    """
+    Opens the advanced settings popup window.
+
+    This window contains various advanced settings for the program, such as the segmenter backend, preservation toggles, occlusion preservation, smoothing toggles, and other miscellaneous settings.
+
+    The window is designed to be scrollable, allowing the user to access all the settings even if the window is too small to display all of them at once.
+
+    The window is closed by clicking the "Close" button.
+
+    """
+    global POPUP_ADV
+    if POPUP_ADV and POPUP_ADV.winfo_exists():
+        POPUP_ADV.focus()
+        return
+
+    POPUP_ADV = ctk.CTkToplevel(root)
+    POPUP_ADV.title(_("Advanced Settings"))
+    POPUP_ADV.geometry(f"{POPUP_WIDTH}x{POPUP_HEIGHT}")
+    POPUP_ADV.focus()
+
+    frame = ctk.CTkScrollableFrame(POPUP_ADV, width=POPUP_SCROLL_WIDTH, height=POPUP_SCROLL_HEIGHT)
+    frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+    row = 0
+
+    # Segmenter backend
+    seg_label = ctk.CTkLabel(frame, text=_("Segmenter Backend"))
+    seg_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    seg_var = ctk.StringVar(value=str(modules.globals.segmenter_backend))
+    seg_menu = ctk.CTkOptionMenu(frame, variable=seg_var, values=["auto", "mediapipe", "bisenet"],
+                                 command=lambda v: (setattr(modules.globals, "segmenter_backend", v), save_switch_states()))
+    seg_menu.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # Preservation toggles
+    teeth_var = ctk.BooleanVar(value=modules.globals.preserve_teeth)
+    teeth_switch = ctk.CTkSwitch(frame, text=_("Preserve Teeth"), variable=teeth_var, cursor="hand2",
+                                 command=lambda: (setattr(modules.globals, "preserve_teeth", teeth_var.get()), save_switch_states()))
+    teeth_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    hair_var = ctk.BooleanVar(value=modules.globals.preserve_hairline)
+    hair_switch = ctk.CTkSwitch(frame, text=_("Preserve Hairline"), variable=hair_var, cursor="hand2",
+                                command=lambda: (setattr(modules.globals, "preserve_hairline", hair_var.get()), save_switch_states()))
+    hair_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    row += 1
+
+    # Occlusion preservation
+    occ_var = ctk.BooleanVar(value=modules.globals.occlusion_aware_compositing)
+    occ_switch = ctk.CTkSwitch(frame, text=_("Occlusion Preserve"), variable=occ_var, cursor="hand2",
+                               command=lambda: (setattr(modules.globals, "occlusion_aware_compositing", occ_var.get()), save_switch_states()))
+    occ_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    occ_label = ctk.CTkLabel(frame, text=f"Occlusion Sensitivity: {modules.globals.occlusion_sensitivity:.2f}")
+    occ_label.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    def on_occ_change(val: float):
+        modules.globals.occlusion_sensitivity = float(round(val, 2))
+        occ_label.configure(text=f"Occlusion Sensitivity: {modules.globals.occlusion_sensitivity:.2f}")
+        save_switch_states()
+    occ_slider = ctk.CTkSlider(frame, from_=0.0, to=1.0, number_of_steps=100, command=on_occ_change, width=200)
+    occ_slider.set(float(modules.globals.occlusion_sensitivity))
+    occ_slider.grid(row=row+1, column=1, padx=10, pady=6, sticky="ew")
+    row += 2
+
+    # Smoothing toggles
+    smoothing_var = ctk.BooleanVar(value=modules.globals.smoothing_enabled)
+    smoothing_switch = ctk.CTkSwitch(frame, text=_("Enable Smoothing"), variable=smoothing_var, cursor="hand2",
+                                     command=lambda: (setattr(modules.globals, "smoothing_enabled", smoothing_var.get()), save_switch_states()))
+    smoothing_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    stream_only_var = ctk.BooleanVar(value=modules.globals.smoothing_stream_only)
+    stream_only_switch = ctk.CTkSwitch(frame, text=_("Smoothing Stream Only"), variable=stream_only_var, cursor="hand2",
+                                       command=lambda: (setattr(modules.globals, "smoothing_stream_only", stream_only_var.get()), save_switch_states()))
+    stream_only_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    row += 1
+
+    use_fps_var = ctk.BooleanVar(value=modules.globals.smoothing_use_fps)
+    use_fps_switch = ctk.CTkSwitch(frame, text=_("Use Fixed FPS for Smoothing"), variable=use_fps_var, cursor="hand2",
+                                   command=lambda: (setattr(modules.globals, "smoothing_use_fps", use_fps_var.get()), save_switch_states()))
+    use_fps_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    row += 1
+
+    # Smoothing sliders
+    # FPS
+    fps_label = ctk.CTkLabel(frame, text=f"FPS: {modules.globals.smoothing_fps:.0f}")
+    fps_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_fps_change(val: float):
+        modules.globals.smoothing_fps = float(round(val))
+        fps_label.configure(text=f"FPS: {modules.globals.smoothing_fps:.0f}")
+        save_switch_states()
+    fps_slider = ctk.CTkSlider(frame, from_=10, to=120, number_of_steps=110, command=on_fps_change, width=200)
+    fps_slider.set(float(modules.globals.smoothing_fps))
+    fps_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # Min cutoff
+    mc_label = ctk.CTkLabel(frame, text=f"Min Cutoff: {modules.globals.smoothing_min_cutoff:.2f}")
+    mc_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_mc_change(val: float):
+        modules.globals.smoothing_min_cutoff = float(round(val, 2))
+        mc_label.configure(text=f"Min Cutoff: {modules.globals.smoothing_min_cutoff:.2f}")
+        save_switch_states()
+    mc_slider = ctk.CTkSlider(frame, from_=0.1, to=5.0, number_of_steps=98, command=on_mc_change, width=200)
+    mc_slider.set(float(modules.globals.smoothing_min_cutoff))
+    mc_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # Beta
+    beta_label = ctk.CTkLabel(frame, text=f"Beta: {modules.globals.smoothing_beta:.2f}")
+    beta_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_beta_change(val: float):
+        modules.globals.smoothing_beta = float(round(val, 2))
+        beta_label.configure(text=f"Beta: {modules.globals.smoothing_beta:.2f}")
+        save_switch_states()
+    beta_slider = ctk.CTkSlider(frame, from_=0.0, to=2.0, number_of_steps=200, command=on_beta_change, width=200)
+    beta_slider.set(float(modules.globals.smoothing_beta))
+    beta_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    # dCutoff
+    dc_label = ctk.CTkLabel(frame, text=f"dCutoff: {modules.globals.smoothing_dcutoff:.2f}")
+    dc_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    def on_dc_change(val: float):
+        modules.globals.smoothing_dcutoff = float(round(val, 2))
+        dc_label.configure(text=f"dCutoff: {modules.globals.smoothing_dcutoff:.2f}")
+        save_switch_states()
+    dc_slider = ctk.CTkSlider(frame, from_=0.1, to=5.0, number_of_steps=98, command=on_dc_change, width=200)
+    dc_slider.set(float(modules.globals.smoothing_dcutoff))
+    dc_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    close_button = ctk.CTkButton(POPUP_ADV, text=_("Close"), command=lambda: POPUP_ADV.destroy())
+    close_button.grid(row=1, column=0, padx=10, pady=10)
+
 def close_mapper_window():
     global POPUP, POPUP_LIVE
     if POPUP and POPUP.winfo_exists():
@@ -462,6 +682,18 @@ def close_mapper_window():
 
 
 def analyze_target(start: Callable[[], None], root: ctk.CTk):
+    """
+    Analyze the target and prepare the source-target map for face swapping.
+
+    If the target is an image, get the unique faces from the target image.
+    If the target is a video, get the unique faces from the target video.
+
+    If there are faces in the target, create a pop-up to select source faces.
+    If there are no faces in the target, update the status to "No faces found in target".
+
+    :param start: Callable to start the face swapping
+    :param root: The root widget of the main window
+    """
     if POPUP != None and POPUP.winfo_exists():
         update_status("Please complete pop-up or close it.")
         return
@@ -487,6 +719,18 @@ def analyze_target(start: Callable[[], None], root: ctk.CTk):
 def create_source_target_popup(
         start: Callable[[], None], root: ctk.CTk, map: list
 ) -> None:
+    """
+    Create a pop-up to select source faces for face swapping.
+
+    This function creates a pop-up window with the source-target map
+    and buttons to select source faces. If the user selects a source
+    face for each target face, the pop-up will close and the
+    select_output_path function will be called to select the output path.
+
+    :param start: Callable to start the face swapping
+    :param root: The root widget of the main window
+    :param map: The source-target map to display in the pop-up
+    """
     global POPUP, popup_status_label
 
     POPUP = ctk.CTkToplevel(root)
@@ -507,6 +751,13 @@ def create_source_target_popup(
     scrollable_frame.grid(row=0, column=0, padx=0, pady=0, sticky="nsew")
 
     def on_button_click(map, button_num):
+        """
+        Updates the source-target map when a source face button is clicked.
+
+        :param map: The source-target map to update
+        :param button_num: The id of the button that was clicked
+        :return: The updated source-target map
+        """
         map = update_popup_source(scrollable_frame, map, button_num)
 
     for item in map:
@@ -556,6 +807,17 @@ def create_source_target_popup(
 def update_popup_source(
         scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int
 ) -> list:
+    """
+    Updates the source image and face in the source-target map for the given button number.
+
+    Args:
+        scrollable_frame (ctk.CTkScrollableFrame): The frame to display the source image.
+        map (list): The source-target map.
+        button_num (int): The button number to update.
+
+    Returns:
+        list: The updated source-target map.
+    """
     global source_label_dict
 
     source_path = ctk.filedialog.askopenfilename(
@@ -639,6 +901,11 @@ def update_pop_live_status(text: str) -> None:
 
 
 def update_tumbler(var: str, value: bool) -> None:
+    """
+    Update the fp_ui dictionary with the given variable and value, and save the state.
+    If a live preview is currently running, update the frame processors accordingly.
+    """
+
     modules.globals.fp_ui[var] = value
     save_switch_states()
     # If we're currently in a live preview, update the frame processors
@@ -650,6 +917,15 @@ def update_tumbler(var: str, value: bool) -> None:
 
 
 def select_source_path() -> None:
+    """
+    Opens a file dialog to select an image as the source path.
+
+    If an image is selected, it will be rendered in the source label and the RECENT_DIRECTORY_SOURCE variable will be updated to the directory of the selected image.
+
+    If no image is selected, the source path will be set to None and the source label will be cleared.
+
+    :return: None
+    """
     global RECENT_DIRECTORY_SOURCE, img_ft, vid_ft
 
     PREVIEW.withdraw()
@@ -693,6 +969,13 @@ def toggle_open_mouth_source(var) -> None:
 
 
 def swap_faces_paths() -> None:
+    """
+    Swaps the paths for the source and target images.
+
+    Swaps the paths stored in modules.globals.source_path and modules.globals.target_path.
+    Updates the RECENT_DIRECTORY_SOURCE and RECENT_DIRECTORY_TARGET variables to the new directories.
+    Hides the preview window and updates the source and target image previews to reflect the new paths.
+    """
     global RECENT_DIRECTORY_SOURCE, RECENT_DIRECTORY_TARGET
 
     source_path = modules.globals.source_path
@@ -717,6 +1000,16 @@ def swap_faces_paths() -> None:
 
 
 def select_target_path() -> None:
+    """
+    Prompts the user to select a target image or video.
+
+    This function opens a file dialog to select a target image or video. If the selected file is an image, it is displayed
+    in the target image preview with a maximum size of 200x200. If the selected file is a video, the first frame of the video
+    is displayed in the target image preview with a maximum size of 200x200.
+
+    If the user cancels the file dialog, the target path is set to None and the target image preview is cleared.
+    """
+
     global RECENT_DIRECTORY_TARGET, img_ft, vid_ft
 
     PREVIEW.withdraw()
@@ -768,8 +1061,16 @@ def select_output_path(start: Callable[[], None]) -> None:
 
 
 def check_and_ignore_nsfw(target, destroy: Callable = None) -> bool:
-    """Check if the target is NSFW.
-    TODO: Consider to make blur the target.
+
+    """
+    Check if the target is NSFW content and ignore the processing if it is.
+
+    Args:
+        target (str or ndarray): The target image/video file path or frame object
+        destroy (Callable, optional): The function to destroy the window frame. Defaults to None.
+
+    Returns:
+        bool: True if the target is NSFW, False otherwise
     """
     from numpy import ndarray
     from modules.predicter import predict_image, predict_video, predict_frame
@@ -790,6 +1091,17 @@ def check_and_ignore_nsfw(target, destroy: Callable = None) -> bool:
 
 
 def fit_image_to_size(image, width: int, height: int):
+    """
+    Resizes an image to fit within the given dimensions while maintaining its aspect ratio.
+
+    Args:
+        image: The image to resize.
+        width: The desired width of the resized image. If None or <= 0, the original width is used.
+        height: The desired height of the resized image. If None or <= 0, the original height is used.
+
+    Returns:
+        The resized image.
+    """
     if width is None or height is None or width <= 0 or height <= 0:
         return image
     h, w, _ = image.shape
@@ -799,7 +1111,7 @@ def fit_image_to_size(image, width: int, height: int):
     ratio_h = height / h
     # Use the smaller ratio to ensure the image fits within the given dimensions
     ratio = min(ratio_w, ratio_h)
-    
+
     # Compute new dimensions, ensuring they're at least 1 pixel
     new_width = max(1, int(ratio * w))
     new_height = max(1, int(ratio * h))
@@ -818,6 +1130,18 @@ def render_image_preview(image_path: str, size: Tuple[int, int]) -> ctk.CTkImage
 def render_video_preview(
         video_path: str, size: Tuple[int, int], frame_number: int = 0
 ) -> ctk.CTkImage:
+    """
+    Renders a preview image from the given video at the specified frame number.
+
+    Args:
+        video_path: The path to the video file.
+        size: The desired size of the preview image.
+        frame_number: The frame number to render. Defaults to 0.
+
+    Returns:
+        A ctk.CTkImage of the preview image.
+    """
+
     capture = cv2.VideoCapture(video_path)
     if frame_number:
         capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
@@ -854,6 +1178,15 @@ def init_preview() -> None:
 
 
 def update_preview(frame_number: int = 0) -> None:
+    """
+    Update the preview image based on the current frame number.
+
+    Args:
+        frame_number: The frame number to render. Defaults to 0.
+
+    Returns:
+        None
+    """
     if modules.globals.source_path and modules.globals.target_path:
         update_status("Processing...")
         temp_frame = get_video_frame(modules.globals.target_path, frame_number)
@@ -869,12 +1202,14 @@ def update_preview(frame_number: int = 0) -> None:
             mouth_mask_var.set(apply_mouth)
         if modules.globals.nsfw_filter and check_and_ignore_nsfw(temp_frame):
             return
+
         for frame_processor in get_frame_processors_modules(
                 modules.globals.frame_processors
         ):
             temp_frame = frame_processor.process_frame(
                 get_one_face(cv2.imread(modules.globals.source_path)), temp_frame
             )
+
         image = Image.fromarray(cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB))
         image = ImageOps.contain(
             image, (PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT), Image.LANCZOS
@@ -1126,6 +1461,13 @@ def create_source_target_popup_for_webcam(
 
 
 def clear_source_target_images(map: list):
+
+
+    """
+    Clears the source-target map by deleting the "source" and "target" keys in each item, and then destroys and deletes the corresponding labels in the source_label_dict_live and target_label_dict_live dictionaries.
+
+    This function is used to reset the state of the source-target map and the live preview labels when the user clears the map or submits it.
+    """
     global source_label_dict_live, target_label_dict_live
 
     for item in map:
@@ -1144,6 +1486,17 @@ def clear_source_target_images(map: list):
 
 
 def refresh_data(map: list):
+    """
+    Refreshes the live preview window by destroying and re-creating all the labels and buttons based on the current state of the map.
+
+    This function is used to update the live preview window when the user adds, removes, or edits mappings in the source-target map.
+
+    Parameters:
+    map (list): A list of dictionaries containing the source-target map. Each item in the list represents a single mapping, and contains the keys "id", "source", and "target". The "source" and "target" keys contain dictionaries with the keys "cv2" and "path", which contain the OpenCV image and the path to the image file, respectively.
+
+    Returns:
+    None
+    """
     global POPUP_LIVE
 
     scrollable_frame = ctk.CTkScrollableFrame(

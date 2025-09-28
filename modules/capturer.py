@@ -4,17 +4,41 @@ import modules.globals  # Import the globals to check the color correction toggl
 
 
 def get_video_frame(video_path: str, frame_number: int = 0) -> Any:
+    """
+    Gets a frame from a video.
+
+    Args:
+        video_path (str): The path to the video file.
+        frame_number (int, optional): The frame number to retrieve. Defaults to 0.
+
+    Returns:
+        Any: The frame as a numpy array or None if the frame could not be read.
+    """
+
+    try:
+        frame_number = int(float(frame_number))
+    except (TypeError, ValueError):
+        frame_number = 0
+
     capture = cv2.VideoCapture(video_path)
+
+    if not capture.isOpened():
+        capture.release()
+        return None
 
     # Set MJPEG format to ensure correct color space handling
     capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-    
+
     # Only force RGB conversion if color correction is enabled
     if modules.globals.color_correction:
         capture.set(cv2.CAP_PROP_CONVERT_RGB, 1)
-    
-    frame_total = capture.get(cv2.CAP_PROP_FRAME_COUNT)
-    capture.set(cv2.CAP_PROP_POS_FRAMES, min(frame_total, frame_number - 1))
+
+    frame_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    frame_index = max(0, frame_number)
+    if frame_total > 0:
+        frame_index = min(frame_index, frame_total - 1)
+    capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+
     has_frame, frame = capture.read()
 
     if has_frame and modules.globals.color_correction:
@@ -23,8 +47,6 @@ def get_video_frame(video_path: str, frame_number: int = 0) -> Any:
 
     capture.release()
     return frame if has_frame else None
-
-
 def get_video_frame_total(video_path: str) -> int:
     capture = cv2.VideoCapture(video_path)
     video_frame_total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))

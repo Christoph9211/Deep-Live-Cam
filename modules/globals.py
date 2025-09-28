@@ -28,9 +28,9 @@ video_encoder = None
 video_quality = None
 live_mirror = False
 live_resizable = True
-max_memory = None
+max_memory = 48
 execution_providers: List[str] = []
-execution_threads = None
+execution_threads = 16
 headless = None
 log_level = "error"
 fp_ui: Dict[str, bool] = {"face_enhancer": False}
@@ -44,5 +44,30 @@ mouth_mask_segments: List[tuple[float, float]] = []
 fps = 30.0
 current_frame_idx = 0
 mask_feather_ratio = 8
-mask_down_size = 0.25
-mask_size = 1.0
+mask_down_size = 0.50
+mask_size = 1
+
+# Landmark smoothing (One-Euro filter)
+smoothing_enabled = False
+smoothing_stream_only = True
+smoothing_use_fps = True
+smoothing_fps = 30.0
+smoothing_min_cutoff = 1.0
+smoothing_beta = 0.0
+smoothing_dcutoff = 1.0
+smoothing_max_track_age = 30
+
+# Region preservation toggles
+preserve_teeth = False
+preserve_hairline = False
+
+# Semantic segmenter backend selection: 'auto' | 'mediapipe' | 'bisenet'
+segmenter_backend: str = 'auto'
+
+# Occlusion-aware compositing
+# Preserves foreground occluders (e.g., hands, props) by reinstating
+# original pixels where strong edges present in the original are missing
+# in the swapped output. Enabled by default.
+occlusion_aware_compositing = True
+# Sensitivity 0.0 (conservative) .. 1.0 (aggressive)
+occlusion_sensitivity = 0.5
