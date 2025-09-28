@@ -107,16 +107,18 @@ def multi_process_frame(
         """
         while True:
             batch: List[str] = []
-            try:
-                # Pull up to effective_batch_size items without blocking
-                for _ in range(effective_batch_size):
+            # Pull up to ``effective_batch_size`` items without blocking.  We
+            # cannot simply break out of the loop on ``Empty`` because any
+            # frames already dequeued would be dropped and never processed.
+            for _ in range(effective_batch_size):
+                try:
                     batch.append(frame_queue.get_nowait())
-            except Empty:
-                # Stop filling this batch when the queue runs dry
-                break
+                except Empty:
+                    break
 
             if not batch:
-                # No items were retrieved, so the queue was empty. Worker can exit.
+                # Queue is empty and nothing was dequeued for this batch, so
+                # the worker can exit cleanly.
                 break
 
             process_frames(source_path, batch, progress)
