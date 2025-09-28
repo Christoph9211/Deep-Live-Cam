@@ -1,7 +1,7 @@
 import os  # <-- Added for os.path.exists
 import time
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import insightface
 import threading
@@ -33,7 +33,10 @@ except Exception:
 
 FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
+_TARGET_FRAME_LOOKUP_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
+_TARGET_FRAME_LOOKUP_SIZE_KEY = '_target_frame_lookup_size'
+_TARGET_FRAME_LOOKUP_KEY = '_target_frame_lookup'
 
 # -----------------------------
 # One-Euro filter for smoothing
@@ -663,6 +666,50 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # pyright: ign
     return temp_frame
 
 
+def _get_target_frames_for_path(map_entry: Dict[str, Any], frame_path: str) -> List[Dict[str, Any]]:
+    """Return cached target frame metadata for the requested frame path.
+
+    The source/target mapping stores a list of dictionaries per centroid that
+    looks like ``{'frame': idx, 'faces': [...], 'location': '/tmp/.../0001.png'}``.
+    Looking up the current frame by scanning this list for every processed
+    frame results in an :math:`O(N^2)` workflow (``N`` = number of frames),
+    which is the primary reason face swapping appears to "freeze" on longer
+    videos once temp frames are generated.  This helper normalises each map
+    entry into a dictionary keyed by the frame path so that subsequent
+    lookups are :math:`O(1)`.
+
+    The lookup dictionary is cached on the ``map_entry`` itself to avoid
+    rebuilding it for every processed frame.  Because the processing stage is
+    multi-threaded we protect cache creation with a dedicated lock.
+    """
+
+    frames = map_entry.get('target_faces_in_frame') or []
+    if not frames or not frame_path:
+        return []
+
+    lookup: Optional[Dict[str, List[Dict[str, Any]]]] = map_entry.get(_TARGET_FRAME_LOOKUP_KEY)
+    cached_size = map_entry.get(_TARGET_FRAME_LOOKUP_SIZE_KEY)
+
+    if lookup is None or cached_size != len(frames):
+        with _TARGET_FRAME_LOOKUP_LOCK:
+            lookup = map_entry.get(_TARGET_FRAME_LOOKUP_KEY)
+            cached_size = map_entry.get(_TARGET_FRAME_LOOKUP_SIZE_KEY)
+            if lookup is None or cached_size != len(frames):
+                fresh_lookup: Dict[str, List[Dict[str, Any]]] = {}
+                for frame in frames:
+                    location = frame.get('location')
+                    if not location:
+                        continue
+                    fresh_lookup.setdefault(location, []).append(frame)
+                map_entry[_TARGET_FRAME_LOOKUP_KEY] = fresh_lookup
+                map_entry[_TARGET_FRAME_LOOKUP_SIZE_KEY] = len(frames)
+                lookup = fresh_lookup
+
+    if not lookup:
+        return []
+    return lookup.get(frame_path, [])
+
+
 def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
     # --- No changes needed in process_frame_v2 ---
     # (Assuming swap_face handles the potential None return from get_face_swapper)
@@ -695,24 +742,21 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
     elif is_video(modules.globals.target_path):
         if modules.globals.many_faces:
             source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
-
-                for frame in target_frame:
+            for map_entry in modules.globals.source_target_map:  # Renamed 'map' to 'map_entry'
+                for frame in _get_target_frames_for_path(map_entry, temp_frame_path):
                     if frame is not None:
-                        for target_face in frame['faces']:
+                        for target_face in frame.get('faces', []):
                             if target_face is not None:
                                 temp_frame = swap_face(source_face, target_face, temp_frame)
 
         elif not modules.globals.many_faces:
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
+            for map_entry in modules.globals.source_target_map:  # Renamed 'map' to 'map_entry'
                 if "source" in map_entry:
-                    target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
                     source_face = map_entry['source']['face']
 
-                    for frame in target_frame:
+                    for frame in _get_target_frames_for_path(map_entry, temp_frame_path):
                         if frame is not None:
-                            for target_face in frame['faces']:
+                            for target_face in frame.get('faces', []):
                                 if target_face is not None:
                                     temp_frame = swap_face(source_face, target_face, temp_frame)
     else: # Fallback for neither image nor video (e.g., live feed?)
