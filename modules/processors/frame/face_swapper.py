@@ -12,7 +12,7 @@ import modules.processors.frame.core
 # Ensure update_status is imported if not already globally accessible
 # If it's part of modules.core, it might already be accessible via modules.core.update_status
 from modules.core import update_status
-from modules.face_analyser import FACE_INFER_LOCK, get_one_face, get_many_faces, default_source_face
+from modules.face_analyser import clone_face, get_one_face, get_many_faces, default_source_face
 from modules.typing import Face, Frame
 from modules.utilities import conditional_download, resolve_relative_path, is_image, is_video
 from modules.cluster_analysis import find_closest_centroid
@@ -702,8 +702,7 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         if (not getattr(modules.globals, 'smoothing_stream_only', True)) or _SMOOTH_IN_STREAM:
             _smooth_face_inplace(target_face, _smoothing_dt())
 
-    with FACE_INFER_LOCK:
-        swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
     # Apply region preservation if any toggle is enabled
     if (
@@ -743,83 +742,94 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # pyright: ign
 
 
 def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
-    # --- No changes needed in process_frame_v2 ---
-    # (Assuming swap_face handles the potential None return from get_face_swapper)
-    """
-    Process a frame (image or video) by replacing the detected face(s) with the target face(s) as specified in the source-target map.
-
-    Args:
-        temp_frame (Frame): The frame in which the replacement will take place.
-        temp_frame_path (str): The path of the frame being processed, required for video processing.
-
-    Returns:
-        Frame: The frame with the replaced face(s).
-    """
+    """Process a frame using precomputed source-to-target mappings."""
     if is_image(modules.globals.target_path):
         if modules.globals.many_faces:
             source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                target_face = map_entry['target']['face']
-                if target_face is not None:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
-
-        elif not modules.globals.many_faces:
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                if "source" in map_entry:
-                    source_face = map_entry['source']['face']
-                    target_face = map_entry['target']['face']
-                    if source_face is not None and target_face is not None:
-                        temp_frame = swap_face(source_face, target_face, temp_frame)
-
+            if source_face is None:
+                return temp_frame
+            for map_entry in modules.globals.source_target_map:
+                target = map_entry.get('target')
+                if not target:
+                    continue
+                target_face = clone_face(target.get('face'))
+                if target_face is None:
+                    continue
+                temp_frame = swap_face(source_face, target_face, temp_frame)
+        else:
+            for map_entry in modules.globals.source_target_map:
+                if 'source' not in map_entry or 'target' not in map_entry:
+                    continue
+                source_face = clone_face(map_entry['source'].get('face'))
+                target_face = clone_face(map_entry['target'].get('face'))
+                if source_face is None or target_face is None:
+                    continue
+                temp_frame = swap_face(source_face, target_face, temp_frame)
     elif is_video(modules.globals.target_path):
         if modules.globals.many_faces:
             source_face = default_source_face()
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
-
-                for frame in target_frame:
-                    if frame is not None:
-                        for target_face in frame['faces']:
-                            if target_face is not None:
-                                temp_frame = swap_face(source_face, target_face, temp_frame)
-
-        elif not modules.globals.many_faces:
-            for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
-                if "source" in map_entry:
-                    target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
-                    source_face = map_entry['source']['face']
-
-                    for frame in target_frame:
-                        if frame is not None:
-                            for target_face in frame['faces']:
-                                if target_face is not None:
-                                    temp_frame = swap_face(source_face, target_face, temp_frame)
-    else: # Fallback for neither image nor video (e.g., live feed?)
-        detected_faces = get_many_faces(temp_frame)
+            if source_face is None:
+                return temp_frame
+            for map_entry in modules.globals.source_target_map:
+                target_frames = [frame for frame in map_entry.get('target_faces_in_frame', []) if frame.get('location') == temp_frame_path]
+                for frame in target_frames:
+                    for target_face in frame.get('faces', []):
+                        cloned = clone_face(target_face)
+                        if cloned is None:
+                            continue
+                        temp_frame = swap_face(source_face, cloned, temp_frame)
+        else:
+            for map_entry in modules.globals.source_target_map:
+                if 'source' not in map_entry:
+                    continue
+                source_face = clone_face(map_entry['source'].get('face'))
+                if source_face is None:
+                    continue
+                target_frames = [frame for frame in map_entry.get('target_faces_in_frame', []) if frame.get('location') == temp_frame_path]
+                for frame in target_frames:
+                    for target_face in frame.get('faces', []):
+                        cloned = clone_face(target_face)
+                        if cloned is None:
+                            continue
+                        temp_frame = swap_face(source_face, cloned, temp_frame)
+    else:
+        detected_faces = get_many_faces(temp_frame) or []
         if modules.globals.many_faces:
-            if detected_faces is not None:
-                source_face = default_source_face()
-                for target_face in detected_faces:
-                    if target_face is not None:
+            source_face = default_source_face()
+            if source_face is None:
+                return temp_frame
+            for target_face in detected_faces:
+                cloned = clone_face(target_face)
+                if cloned is None:
+                    continue
+                temp_frame = swap_face(source_face, cloned, temp_frame)
+        else:
+            if hasattr(modules.globals, 'simple_map') and modules.globals.simple_map:
+                target_embeddings = modules.globals.simple_map.get('target_embeddings', [])
+                source_faces = modules.globals.simple_map.get('source_faces', [])
+                if not target_embeddings or not source_faces:
+                    return temp_frame
+                if len(detected_faces) <= len(target_embeddings):
+                    for detected_face in detected_faces:
+                        if detected_face is None:
+                            continue
+                        closest_centroid_index, _ = find_closest_centroid(target_embeddings, detected_face.normed_embedding)
+                        source_face = clone_face(source_faces[closest_centroid_index])
+                        target_face = clone_face(detected_face)
+                        if source_face is None or target_face is None:
+                            continue
                         temp_frame = swap_face(source_face, target_face, temp_frame)
-
-        elif not modules.globals.many_faces:
-            if detected_faces is not None:
-                if hasattr(modules.globals, 'simple_map') and modules.globals.simple_map: # Check simple_map exists
-                    if len(detected_faces) <= len(modules.globals.simple_map['target_embeddings']):
-                        for detected_face in detected_faces:
-                            if detected_face is not None:
-                                closest_centroid_index, _ = find_closest_centroid(modules.globals.simple_map['target_embeddings'], detected_face.normed_embedding)
-                                temp_frame = swap_face(modules.globals.simple_map['source_faces'][closest_centroid_index], detected_face, temp_frame)
-                    else:
-                        detected_faces_centroids = [face.normed_embedding for face in detected_faces]
-                        i = 0
-                        for target_embedding in modules.globals.simple_map['target_embeddings']:
-                            closest_centroid_index, _ = find_closest_centroid(detected_faces_centroids, target_embedding)
-                            # Ensure index is valid before accessing detected_faces
-                            if closest_centroid_index < len(detected_faces):
-                                temp_frame = swap_face(modules.globals.simple_map['source_faces'][i], detected_faces[closest_centroid_index], temp_frame)
-                            i += 1
+                else:
+                    detected_faces_centroids = [face.normed_embedding for face in detected_faces]
+                    for idx, target_embedding in enumerate(target_embeddings):
+                        closest_centroid_index, _ = find_closest_centroid(detected_faces_centroids, target_embedding)
+                        if closest_centroid_index >= len(detected_faces):
+                            continue
+                        source_face = clone_face(source_faces[idx])
+                        target_face = clone_face(detected_faces[closest_centroid_index])
+                        if source_face is None or target_face is None:
+                            continue
+                        temp_frame = swap_face(source_face, target_face, temp_frame)
     return temp_frame
 
 

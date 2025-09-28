@@ -2,7 +2,6 @@ import os
 import shutil
 from typing import Any
 import insightface
-import threading
 
 import cv2
 import numpy as np
@@ -14,7 +13,6 @@ from modules.utilities import get_temp_directory_path, create_temp, extract_fram
 from pathlib import Path
 
 FACE_ANALYSER = None
-FACE_INFER_LOCK = threading.RLock()
 
 
 def get_face_analyser() -> Any:
@@ -36,9 +34,7 @@ def get_one_face(frame: Frame) -> Any:
     Returns:
         The face object with the leftmost bounding box, or None if no faces are detected.
     """
-    analyser = get_face_analyser()
-    with FACE_INFER_LOCK:
-        faces = analyser.get(frame)
+    faces = get_face_analyser().get(frame)
     try:
         return min(faces, key=lambda x: x.bbox[0])
     except ValueError:
@@ -55,13 +51,32 @@ def get_many_faces(frame: Frame) -> Any:
     Returns:
         The list of detected faces, or None if no faces are detected.
     """
-    analyser = get_face_analyser()
     try:
-        with FACE_INFER_LOCK:
-            faces = analyser.get(frame)
-        return faces
+        return get_face_analyser().get(frame)
     except IndexError:
         return None
+
+
+def clone_face(face: Any) -> Any:
+    """Return a defensive copy of an InsightFace face object."""
+    if face is None:
+        return None
+
+    def _clone_value(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return value.copy()
+        if isinstance(value, face.__class__):
+            return clone_face(value)
+        if isinstance(value, list):
+            return [_clone_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(_clone_value(item) for item in value)
+        if isinstance(value, dict):
+            return {k: _clone_value(v) for k, v in value.items()}
+        return value
+
+    data = {key: _clone_value(val) for key, val in face.items()}
+    return face.__class__(data)
 
 def has_valid_map() -> bool:
     """Returns True if the source-target map contains at least one valid mapping, False otherwise."""
@@ -80,7 +95,7 @@ def default_source_face() -> Any:
     """
     for map in modules.globals.source_target_map:
         if "source" in map:
-            return map['source']['face']
+            return clone_face(map['source']['face'])
     return None
 
 def simplify_maps() -> Any:
@@ -95,7 +110,7 @@ def simplify_maps() -> Any:
     for map in modules.globals.source_target_map:
         if "source" in map and "target" in map:
             centroids.append(map['target']['face'].normed_embedding)
-            faces.append(map['source']['face'])
+            faces.append(clone_face(map['source']['face']))
 
     modules.globals.simple_map = {'source_faces': faces, 'target_embeddings': centroids}
     return None
