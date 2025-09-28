@@ -68,22 +68,19 @@ def multi_process_frame(
     progress: Any = None,
     batch_size: int = 64,
 ) -> None:
-
-    # Ensure batch_size and max_workers are valid
     """
-    Process frames in parallel using a thread pool.
+    Process frames in parallel using a ThreadPoolExecutor.
 
     Args:
-        source_path (str): Path to the source image or video.
-        temp_frame_paths (List[str]): Paths to the temporary frames of the video.
-        process_frames (Callable[[str, List[str], Any], None]): Function to process a batch of frames.
-        progress (Any, optional): Optional progress object to track the progress of the processing.
-        batch_size (int, optional): Number of frames to process in each batch. Defaults to 64.
+        source_path (str): The path of the source image or video.
+        temp_frame_paths (List[str]): A list of paths to the frames to be processed.
+        process_frames (Callable[[str, List[str], Any], None]): A function that takes a source path and a list of paths to frames and processes them.
+        progress (Any, optional): A progress object to update progress during processing. Defaults to None.
+        batch_size (int, optional): The maximum number of frames to process in parallel. Defaults to 64.
 
     Returns:
         None
     """
-
     effective_batch_size = max(1, batch_size)
     max_workers = max(1, modules.globals.execution_threads or 1)
 
