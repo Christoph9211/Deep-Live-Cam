@@ -3,11 +3,9 @@ import time
 import math
 from typing import Any, List, Optional, Tuple
 import cv2
-import numpy as np
 import insightface
 import threading
 import numpy as np
-import mediapipe as mp
 
 import modules.globals
 import modules.processors.frame.core
@@ -657,7 +655,7 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame: # pyright: ign
         many_faces = get_many_faces(temp_frame)
         if many_faces:
             for target_face in many_faces:
-                temp_frame = swap_face_ultra_fast(source_face, target_face, temp_frame)
+                temp_frame = swap_face(source_face, target_face, temp_frame)
     else:
         target_face = get_one_face(temp_frame)
         if target_face:
@@ -709,11 +707,9 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
         elif not modules.globals.many_faces:
             for map_entry in modules.globals.source_target_map: # Renamed 'map' to 'map_entry'
                 if "source" in map_entry:
-                    target_frame = [
-                        f for f in map_entry['target_faces_in_frame']
-                        if (f.get('location') == frame_id or f.get('frame') == frame_id)
-                    ]
+                    target_frame = [f for f in map_entry['target_faces_in_frame'] if f['location'] == temp_frame_path]
                     source_face = map_entry['source']['face']
+
                     for frame in target_frame:
                         if frame is not None:
                             for target_face in frame['faces']:
@@ -765,33 +761,29 @@ def process_frames(source_path: str, temp_frame_paths: List[str], progress: Any 
 
     source_face = None
     if not modules.globals.map_faces:
-        source_face = get_combined_source_face(source_path)
+        source_img = cv2.imread(source_path)
+        if source_img is not None:
+            source_face = get_one_face(source_img)
         if source_face is None:
              update_status(f"Could not find face in source image: {source_path}, skipping swap.", NAME)
              # If no source face, maybe skip processing? Or handle differently.
              # For now, it will proceed but swap_face might fail later.
 
-    for frame_idx, temp_frame_path in enumerate(temp_frame_paths):
+    for temp_frame_path in temp_frame_paths:
         temp_frame = cv2.imread(temp_frame_path)
         if temp_frame is None:
             update_status(f"Warning: Could not read frame {temp_frame_path}", NAME)
-            if progress:
-                progress.update(1)  # Still update progress even if frame fails
-            continue  # Skip to next frame
-
-        try:
-            modules.globals.current_frame_idx = int(Path(temp_frame_path).stem)
-        except Exception:
-            pass
+            if progress: progress.update(1) # Still update progress even if frame fails
+            continue # Skip to next frame
 
         try:
             if not modules.globals.map_faces:
-                if source_face:  # Only process if source face was found
+                if source_face: # Only process if source face was found
                     result = process_frame(source_face, temp_frame)
                 else:
-                    result = temp_frame  # No source face, return original frame
+                    result = temp_frame # No source face, return original frame
             else:
-                result = process_frame_v2(temp_frame, frame_idx)
+                 result = process_frame_v2(temp_frame, temp_frame_path)
 
             cv2.imwrite(temp_frame_path, result)
         except Exception as exception:
@@ -833,7 +825,11 @@ def process_image(source_path: str, target_path: str, output_path: str) -> None:
         return
 
     if not modules.globals.map_faces:
-        source_face = get_combined_source_face(source_path)
+        source_img = cv2.imread(source_path)
+        if source_img is None:
+             update_status(f"Error: Could not read source image: {source_path}", NAME)
+             return
+        source_face = get_one_face(source_img)
         if source_face is None:
             update_status(f"Error: No face found in source image: {source_path}", NAME)
             return
@@ -868,6 +864,10 @@ def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
         update_status('Many faces enabled. Using first source image (if applicable in v2). Processing...', NAME)
     # The core processing logic is delegated, which is good.
     modules.processors.frame.core.process_video(source_path, temp_frame_paths, process_frames)
+
+
+STREAM_SOURCE_FACE = None
+
 
 def process_frame_stream(source_path: str, frame: Frame) -> Frame:
     """
