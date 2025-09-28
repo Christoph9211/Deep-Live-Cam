@@ -1,1 +1,1 @@
-python run.py --execution-provider cuda --execution-threads 16 --max-memory 48 
+python run.py --execution-provider cuda 
