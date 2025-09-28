@@ -178,9 +178,8 @@ def get_temp_frame_paths(target_path: str) -> List[str]:
     temp_directory_path = get_temp_directory_path(target_path)
     if not os.path.isdir(temp_directory_path):
         return []
-    return sorted(
-        glob.glob((os.path.join(glob.escape(temp_directory_path), "*.png")))
-    )
+    return glob.glob((os.path.join(glob.escape(temp_directory_path), "*.png")))
+    
 
 
 def get_temp_directory_path(target_path: str) -> str:
