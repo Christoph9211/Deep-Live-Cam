@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKFLOW_DIR = os.path.join(ROOT_DIR, "workflow")
@@ -66,9 +66,3 @@ segmenter_backend: str = 'auto'
 occlusion_aware_compositing = True
 # Sensitivity 0.0 (conservative) .. 1.0 (aggressive)
 occlusion_sensitivity = 0.5
-
-# Optional override for reusing an existing directory of extracted frames.
-temp_frame_input_directory: Optional[str] = None
-# Indicates that we should avoid cleaning up temp resources because we are
-# reusing a pre-existing directory of extracted frames.
-reuse_temp_dir = False
