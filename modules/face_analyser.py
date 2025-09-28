@@ -1,6 +1,5 @@
 import os
 import shutil
-from collections import defaultdict
 from typing import Any
 import insightface
 
@@ -12,7 +11,6 @@ from modules.typing import Frame
 from modules.cluster_analysis import find_cluster_centroids, find_closest_centroid
 from modules.utilities import get_temp_directory_path, create_temp, extract_frames, clean_temp, get_temp_frame_paths
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 FACE_ANALYSER = None
 
@@ -141,83 +139,7 @@ def get_unique_faces_from_target_image() -> Any:
     except ValueError:
         return None
     
-def map_faces_to_centroids(centroids: Any, frame: dict) -> list[tuple[int, dict]]:
-    """Assign faces detected in a frame to the nearest embedding centroids."""
-    centroids_array = np.asarray(centroids)
-    if centroids_array.size == 0:
-        return []
-
-    if centroids_array.ndim == 1:
-        centroids_array = centroids_array.reshape(1, -1)
-
-    faces = frame.get('faces') or []
-    if not faces:
-        return []
-
-    embeddings = []
-    valid_faces = []
-    append_embedding = embeddings.append
-    append_face = valid_faces.append
-
-    for face in faces:
-        embedding = None
-        if isinstance(face, dict):
-            embedding = face.get('normed_embedding') or face.get('embedding')
-        else:
-            embedding = getattr(face, 'normed_embedding', None)
-            if embedding is None:
-                embedding = getattr(face, 'embedding', None)
-        if embedding is None:
-            continue
-        append_embedding(embedding)
-        append_face(face)
-
-    if not embeddings:
-        return []
-
-    dtype = centroids_array.dtype if centroids_array.dtype != np.dtype('O') else np.float32
-    embeddings_array = np.asarray(embeddings, dtype=dtype)
-    if embeddings_array.ndim == 1:
-        embeddings_array = embeddings_array.reshape(1, -1)
-
-    similarities = embeddings_array @ centroids_array.T
-    assignments = np.argmax(similarities, axis=1)
-
-    frame_location = frame.get('location')
-    frame_index = frame.get('frame')
-    centroid_to_faces = {}
-
-    for face_obj, centroid_idx in zip(valid_faces, assignments):
-        idx = int(centroid_idx)
-        centroid_faces = centroid_to_faces.setdefault(idx, [])
-        centroid_faces.append(face_obj)
-
-        if isinstance(face_obj, dict):
-            face_obj['target_centroid'] = idx
-            if frame_location is not None:
-                face_obj.setdefault('location', frame_location)
-            if frame_index is not None:
-                face_obj.setdefault('frame', frame_index)
-        else:
-            setattr(face_obj, 'target_centroid', idx)
-            if frame_location is not None and not hasattr(face_obj, 'location'):
-                setattr(face_obj, 'location', frame_location)
-            if frame_index is not None and not hasattr(face_obj, 'frame'):
-                setattr(face_obj, 'frame', frame_index)
-
-    mapped_entries = []
-    for idx, centroid_faces in centroid_to_faces.items():
-        mapped_entries.append((
-            idx,
-            {
-                'frame': frame_index,
-                'location': frame_location,
-                'faces': list(centroid_faces),
-            }
-        ))
-
-    return mapped_entries
-
+    
 def get_unique_faces_from_target_video() -> Any:
     """
     Detects unique faces in the target video, clusters them, and updates the source-target map.
@@ -241,56 +163,39 @@ def get_unique_faces_from_target_video() -> Any:
         create_temp(modules.globals.target_path)
         print('Extracting frames...')
         extract_frames(modules.globals.target_path)
+
         temp_frame_paths = get_temp_frame_paths(modules.globals.target_path)
 
-        with ThreadPoolExecutor(max_workers=modules.globals.execution_threads) as executor:
-            futures = []
-            for frame_index, temp_frame_path in enumerate(temp_frame_paths):
-                future = executor.submit(get_many_faces, cv2.imread(temp_frame_path))
-                futures.append((frame_index, temp_frame_path, future))
-            for frame_index, temp_frame_path, future in futures:
-                many_faces = future.result()
-                if not many_faces:
-                    continue
+        i = 0
+        for temp_frame_path in tqdm(temp_frame_paths, desc="Extracting face embeddings from frames"):
+            temp_frame = cv2.imread(temp_frame_path)
+            many_faces = get_many_faces(temp_frame)
 
-                valid_faces = []
-                for face in many_faces:
-                    embedding = getattr(face, 'normed_embedding', None)
-                    if embedding is None and isinstance(face, dict):
-                        embedding = face.get('normed_embedding')
-                    if embedding is None:
-                        continue
-                    valid_faces.append(face)
-                    face_embeddings.append(embedding)
-
-                if not valid_faces:
-                    continue
-
-                frame_face_embeddings.append({
-                    'frame': frame_index,
-                    'faces': valid_faces,
-                    'location': temp_frame_path
-                })
+            for face in many_faces:
+                face_embeddings.append(face.normed_embedding)
+            
+            frame_face_embeddings.append({'frame': i, 'faces': many_faces, 'location': temp_frame_path})
+            i += 1
 
         centroids = find_cluster_centroids(face_embeddings)
 
-        centroid_to_frames = defaultdict(list)
-        with ThreadPoolExecutor(max_workers=modules.globals.execution_threads) as executor:
-            futures = [executor.submit(map_faces_to_centroids, centroids, frame) for frame in frame_face_embeddings]
-            for future in futures:
-                for centroid_idx, frame_entry in future.result():
-                    centroid_to_frames[int(centroid_idx)].append(frame_entry)
+        for frame in frame_face_embeddings:
+            for face in frame['faces']:
+                closest_centroid_index, _ = find_closest_centroid(centroids, face.normed_embedding)
+                face['target_centroid'] = closest_centroid_index
 
-        modules.globals.source_target_map = [
-            {
-                'id': int(centroid_idx),
-                'target_faces_in_frame': sorted(frames, key=lambda entry: entry.get('frame', -1)),
-                'centroid': centroids[int(centroid_idx)]
-            }
-            for centroid_idx, frames in centroid_to_frames.items()
-        ]
-        modules.globals.source_target_map.sort(key=lambda item: item['id'])
+        for i in range(len(centroids)):
+            modules.globals.source_target_map.append({
+                'id' : i
+            })
 
+            temp = []
+            for frame in tqdm(frame_face_embeddings, desc=f"Mapping frame embeddings to centroids-{i}"):
+                temp.append({'frame': frame['frame'], 'faces': [face for face in frame['faces'] if face['target_centroid'] == i], 'location': frame['location']})
+
+            modules.globals.source_target_map[i]['target_faces_in_frame'] = temp
+
+        # dump_faces(centroids, frame_face_embeddings)
         default_target_face()
     except ValueError:
         return None

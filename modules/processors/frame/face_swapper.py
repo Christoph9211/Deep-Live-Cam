@@ -41,14 +41,6 @@ NAME = 'DLC.FACE-SWAPPER'
 
 class _LowPass:
     def __init__(self, alpha: float, init: Optional[float] = None):
-        """
-        Initializes a _LowPass object.
-
-        Args:
-            alpha (float): The alpha value for the One-Euro filter.
-            init (Optional[float], optional): The initial value for the filter.
-                Defaults to None.
-        """
         self.alpha = alpha
         self.s: Optional[float] = init
 
