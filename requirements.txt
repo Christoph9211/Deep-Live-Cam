@@ -111,7 +111,6 @@ tbb==2021.13.1
 tensorboard==2.19.0
 tensorboard-data-server==0.7.2
 tensorflow==2.19.0
-tensorflow-io-gcs-filesystem==0.31.0
 tensorrt==10.9.0.34
 tensorrt_cu12==10.9.0.34
 tensorrt_cu12_bindings==10.9.0.34
@@ -123,7 +122,6 @@ tk==0.1.0
 tkinterdnd2==0.4.2
 tokenizers==0.21.2
 torch==2.3.1+cu121
-torch_tensorrt==2.7.0+cu128
 torchaudio==2.3.1+cu121
 torchvision==0.18.1+cu121
 tqdm==4.66.4
