@@ -1,6 +1,6 @@
-# WARP.md
+# AGENT.md
 
-This file provides guidance to WARP (warp.dev) when working with code in this repository.
+This file provides guidance when working with code in this repository.
 
 Project: Deep-Live-Cam (GUI and CLI for face swap/enhance on images, videos, and live camera)
 
@@ -11,13 +11,15 @@ Prerequisites and setup
 - Conda environment (recommended). On this machine the environment is typically named dlcam. The user’s curated rule indicates a Linux path at /home/christoph92/miniconda/envs/dlcam; on Windows, just activate the dlcam environment by name.
 - GPUs optional. ONNX Runtime providers supported include cpu, cuda (NVIDIA), dml (Windows DirectML), rocm (AMD), coreml (macOS). Choose with --execution-provider.
 
-Setup commands (PowerShell)
+Setup commands
 
-- Create/activate env and install dependencies:
-  - conda create -y -n dlcam python=3.10
-  - conda activate dlcam
-  - pip install -r requirements.txt
-  - Optional (needed for face mapping features and dev tooling): pip install scikit-learn pre-commit
+1) install PyTorch from the PyTorch index, then the rest from PyPI
+
+pip install --index-url <https://download.pytorch.org/whl/cu124> \
+  torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 \
+  --extra-index-url <https://pypi.org/simple>
+
+pip install -r requirements.txt --no-deps
 
 Common commands
 
@@ -88,8 +90,3 @@ Operational notes
 - Temporary work area: For videos, frames are extracted to temp/<target_basename>. Use --keep-frames to retain; otherwise they are removed after processing. Outputs are written next to the target when appropriate; if you pass a directory as -o/--output
 - Performance: Control threading with --execution-threads. Provider selection heavily influences speed: prefer cuda on NVIDIA, dml on Windows for broad GPU support, cpu as fallback.
 - Live camera: Start the GUI (python run.py), choose a camera from the dropdown, and click Live. Use UI toggles for mirror/resize and processor enabling (face enhancer switch).
-
-What’s not present
-
-- No build/package step (this is a Python application run directly from sources).
-- No test suite exists in the repo at this time.
