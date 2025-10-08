@@ -1,7 +1,7 @@
 import os  # <-- Added for os.path.exists
 import time
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Sequence, Tuple
 import cv2
 import insightface
 import threading
@@ -35,6 +35,290 @@ except Exception:
 FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
+
+# ---------------------------------------------------------------------------
+# Smooth skin-mask builder (convex-hull SDF with logistic falloff)
+# ---------------------------------------------------------------------------
+
+
+def _select_skin_points(
+    kps: np.ndarray,
+    spec: str = "auto",
+    available: Optional[Iterable[int]] = None,
+) -> np.ndarray:
+    """Return a safe subset of landmarks used to approximate facial skin."""
+
+    n = len(kps)
+    if n == 0:
+        return kps
+
+    if spec == "auto":
+        spec = "468" if n >= 200 else "68"
+
+    if spec == "68":
+        idx: Sequence[int] = list(range(2, 15)) + [31, 35, 1, 15]
+    elif spec == "468":
+        idx = [
+            93,
+            132,
+            58,
+            172,
+            136,
+            150,
+            149,
+            176,
+            148,
+            152,
+            323,
+            361,
+            288,
+            397,
+            365,
+            379,
+            378,
+            400,
+            377,
+            383,
+            127,
+            234,
+            454,
+            227,
+            447,
+            205,
+            50,
+            280,
+            101,
+            330,
+        ]
+    else:
+        idx = list(range(n))
+
+    idx = [i for i in idx if 0 <= i < n]
+    if not idx:
+        idx = list(range(n))
+
+    if available is not None:
+        avail = set(int(i) for i in available)
+        idx = [i for i in idx if i in avail]
+        if not idx:
+            idx = list(range(n))
+
+    return kps[idx]
+
+
+def build_skin_sdf_mask(
+    roi_shape: Tuple[int, int],
+    kps_xy: Sequence[Sequence[float]],
+    offset_xy: Tuple[int, int] = (0, 0),
+    landmark_spec: str = "auto",
+    forehead_pad_frac: float = 0.10,
+    edge_width_px: float = 18.0,
+    inner_bias_px: float = 0.0,
+    gamma: float = 1.0,
+    min_hull_points: int = 3,
+) -> np.ndarray:
+    """Create a smooth facial skin mask from landmarks using an SDF profile."""
+
+    H, W = roi_shape
+    if H <= 0 or W <= 0:
+        return np.zeros((max(H, 1), max(W, 1)), dtype=np.float32)
+
+    kps = np.asarray(kps_xy, dtype=np.float32)
+    if kps.ndim != 2 or kps.shape[1] < 2 or kps.shape[0] < min_hull_points:
+        return np.zeros((H, W), dtype=np.float32)
+
+    ox, oy = map(float, offset_xy)
+    pts = kps[:, :2].copy()
+    pts[:, 0] -= ox
+    pts[:, 1] -= oy
+
+    margin = 8.0
+    in_roi = (
+        (pts[:, 0] >= -margin)
+        & (pts[:, 0] <= W + margin)
+        & (pts[:, 1] >= -margin)
+        & (pts[:, 1] <= H + margin)
+    )
+    pts = pts[in_roi]
+    if len(pts) < min_hull_points:
+        return np.zeros((H, W), dtype=np.float32)
+
+    skin_pts = _select_skin_points(pts, spec=landmark_spec)
+    if len(skin_pts) < min_hull_points:
+        skin_pts = pts
+
+    x1, y1 = np.min(skin_pts, axis=0)
+    x2, y2 = np.max(skin_pts, axis=0)
+    if forehead_pad_frac > 1e-6:
+        pad = (y2 - y1) * float(forehead_pad_frac)
+        span = (y2 - y1) if (y2 - y1) > 1e-6 else 1.0
+        thresh = y1 + 0.35 * span
+        top_mask = skin_pts[:, 1] <= thresh
+        skin_pts[top_mask, 1] = np.maximum(0.0, skin_pts[top_mask, 1] - pad)
+
+    skin_pts_i = np.round(skin_pts).astype(np.int32)
+    if len(skin_pts_i) < min_hull_points:
+        return np.zeros((H, W), dtype=np.float32)
+
+    hull = cv2.convexHull(skin_pts_i)
+    if hull is None or len(hull) < min_hull_points:
+        return np.zeros((H, W), dtype=np.float32)
+
+    inside = np.zeros((H, W), dtype=np.uint8)
+    cv2.fillConvexPoly(inside, hull, 1)
+
+    dist_in = cv2.distanceTransform(inside, distanceType=cv2.DIST_L2, maskSize=3)
+    dist_out = cv2.distanceTransform(1 - inside, distanceType=cv2.DIST_L2, maskSize=3)
+    sdf = dist_in - dist_out
+
+    width = max(1e-3, float(edge_width_px))
+    mask = 1.0 / (1.0 + np.exp(-(sdf - float(inner_bias_px)) / width))
+
+    if gamma != 1.0:
+        mask = np.clip(mask, 0.0, 1.0) ** float(gamma)
+
+    return mask.astype(np.float32)
+
+
+def _extract_face_landmarks(face: Face) -> Optional[np.ndarray]:
+    """Return the most detailed available set of 2D landmarks for *face*."""
+
+    candidate_attrs = (
+        "landmark_2d_106",
+        "landmark_3d_68",
+        "landmark_2d_68",
+        "landmark_3d_5",
+        "landmark_2d_5",
+        "kps",
+    )
+    for attr in candidate_attrs:
+        pts = getattr(face, attr, None)
+        if pts is None:
+            continue
+        arr = np.asarray(pts, dtype=np.float32)
+        if arr.ndim == 1 and arr.size % 2 == 0:
+            arr = arr.reshape(-1, 2)
+        if arr.ndim >= 2 and arr.shape[1] >= 2:
+            return arr[:, :2].astype(np.float32)
+    return None
+
+
+def _compute_face_roi(face: Face, frame_shape: Tuple[int, int, int]) -> Optional[Tuple[int, int, int, int]]:
+    """Return a padded, clipped ROI covering the target face."""
+
+    h, w = frame_shape[:2]
+    if hasattr(face, "bbox") and face.bbox is not None:
+        x1, y1, x2, y2 = map(float, face.bbox)
+    else:
+        x1, y1, x2, y2 = 0.0, 0.0, float(w), float(h)
+
+    box_w = max(1.0, x2 - x1)
+    box_h = max(1.0, y2 - y1)
+    pad_x = box_w * 0.12
+    pad_y = box_h * 0.18
+
+    x1 = max(0, int(math.floor(x1 - pad_x)))
+    y1 = max(0, int(math.floor(y1 - pad_y)))
+    x2 = min(w, int(math.ceil(x2 + pad_x)))
+    y2 = min(h, int(math.ceil(y2 + pad_y)))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    return x1, y1, x2, y2
+
+
+def _build_ellipse_mask(
+    roi_shape: Tuple[int, int],
+    face: Face,
+    offset_xy: Tuple[int, int],
+    size_scale: float,
+    height_scale: float,
+    feather_ratio: float,
+) -> Optional[np.ndarray]:
+    """Approximate a mouth/teeth preserve mask using an ellipse heuristic."""
+
+    h, w = roi_shape
+    if h <= 0 or w <= 0:
+        return None
+
+    down = float(getattr(modules.globals, "mask_down_size", 0.5) or 0.5)
+    ds_w = max(1, int(round(w * down)))
+    ds_h = max(1, int(round(h * down)))
+    mask_small = np.zeros((ds_h, ds_w), dtype=np.float32)
+
+    kps = getattr(face, "kps", None)
+    has_kps = kps is not None
+    if has_kps:
+        pts = np.asarray(kps, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[1] < 2:
+            has_kps = False
+    if has_kps and pts.shape[0] >= 5:
+        offset = np.array(offset_xy, dtype=np.float32)
+        lm_left = pts[3, :2] - offset
+        lm_right = pts[4, :2] - offset
+        mouth_center = (lm_left + lm_right) / 2.0
+        mouth_width = float(np.linalg.norm(lm_right - lm_left))
+        mouth_height = mouth_width * float(height_scale)
+        cx = float(mouth_center[0])
+        cy = float(mouth_center[1])
+    else:
+        if hasattr(face, "bbox") and face.bbox is not None:
+            x1, y1, x2, y2 = map(float, face.bbox)
+        else:
+            x1, y1, x2, y2 = float(offset_xy[0]), float(offset_xy[1]), float(offset_xy[0] + w), float(offset_xy[1] + h)
+        x1 -= offset_xy[0]
+        x2 -= offset_xy[0]
+        y1 -= offset_xy[1]
+        y2 -= offset_xy[1]
+        cx = (x1 + x2) / 2.0
+        cy = y1 + (y2 - y1) * 0.72
+        mouth_width = (x2 - x1) * 0.40
+        mouth_height = (y2 - y1) * 0.28
+
+    ax = max(1.0, (mouth_width * 0.5) * float(size_scale))
+    ay = max(1.0, (mouth_height * 0.5) * float(size_scale))
+
+    cx_ds = int(round(cx * down))
+    cy_ds = int(round(cy * down))
+    ax_ds = max(1, int(round(ax * down)))
+    ay_ds = max(1, int(round(ay * down)))
+
+    cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, (255, 255, 255), -1)
+    denom = float(mask_small.max()) if mask_small.size else 0.0
+    mask_small = mask_small / max(denom, 1.0)
+
+    feather = max(1, int(max(ax_ds, ay_ds) / max(float(feather_ratio), 1.0)))
+    if feather % 2 == 0:
+        feather += 1
+    if feather >= 3:
+        mask_small = cv2.GaussianBlur(mask_small, (feather, feather), 0)
+        denom = float(mask_small.max()) if mask_small.size else 0.0
+        mask_small = mask_small / max(denom, 1.0)
+
+    mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+    if mask.size:
+        peak = float(mask.max())
+        if peak > 0.0:
+            mask = mask / peak
+    return np.clip(mask, 0.0, 1.0)
+
+
+def _build_hairline_mask(roi_shape: Tuple[int, int], base_mask: np.ndarray) -> np.ndarray:
+    """Create a gentle falloff mask favouring the original hairline region."""
+
+    h, w = roi_shape
+    if h <= 0 or w <= 0:
+        return np.zeros((h, w), dtype=np.float32)
+
+    rows = np.linspace(0.0, 1.0, num=h, dtype=np.float32)
+    top_emphasis = np.clip(1.0 - (rows / 0.35), 0.0, 1.0)
+    hair = top_emphasis[:, None] * base_mask
+    if hair.size:
+        peak = float(hair.max())
+        if peak > 0.0:
+            hair = hair / peak
+    return hair
 
 # -----------------------------
 # One-Euro filter for smoothing
@@ -457,7 +741,7 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
             """
 
             m = mask.astype(np.float32, copy=False)
-            if m.max(initial=0.0) > 1.0:
+            if m.size and float(m.max()) > 1.0:
                 m = m / 255.0
             return np.clip(m, 0.0, 1.0)
 
@@ -535,190 +819,100 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
                     pass
             return composed
 
-        # 2) Fallback: signed-distance hull mask from facial landmarks
-        has_kps = hasattr(target_face, 'kps') and target_face.kps is not None
-        if has_kps:
-            preserve_hairline = getattr(modules.globals, 'preserve_hairline', False)
-            size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
-            feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
+        # 2) Fallback: signed-distance skin mask with logistic edge profile
+        roi = _compute_face_roi(target_face, swapped_frame.shape)
+        if roi is None:
+            return swapped_frame
 
-            if hasattr(target_face, 'bbox') and target_face.bbox is not None:
-                rx1, ry1, rx2, ry2 = _expand_bbox(tuple(target_face.bbox), w, h, pad=0.08)
-            else:
-                kps = np.asarray(target_face.kps, dtype=np.float32)
-                x1, y1 = np.min(kps, axis=0)
-                x2, y2 = np.max(kps, axis=0)
-                rx1 = max(0, int(math.floor(x1)))
-                ry1 = max(0, int(math.floor(y1)))
-                rx2 = min(w, int(math.ceil(x2)))
-                ry2 = min(h, int(math.ceil(y2)))
-                if rx2 <= rx1 or ry2 <= ry1:
-                    rx1, ry1, rx2, ry2 = 0, 0, w, h
+        rx1, ry1, rx2, ry2 = roi
+        roi_w = rx2 - rx1
+        roi_h = ry2 - ry1
+        if roi_w <= 0 or roi_h <= 0:
+            return swapped_frame
 
-            roi_o = original_frame[ry1:ry2, rx1:rx2]
-            roi_s = swapped_frame[ry1:ry2, rx1:rx2]
-            if roi_o.size and roi_s.size:
-                roi_h, roi_w = roi_s.shape[:2]
-                longest = float(max(roi_h, roi_w))
-                edge_width = max(4.0, longest / max(feather_ratio * 3.0, 1.0))
-                inner_bias = (1.0 - size_scale) * (0.08 * longest)
-                forehead_pad = 0.18 if preserve_hairline else 0.10
+        original_roi = original_frame[ry1:ry2, rx1:rx2]
+        swapped_roi = swapped_frame[ry1:ry2, rx1:rx2]
 
-                mask_roi = build_skin_sdf_mask(
-                    roi_shape=roi_s.shape[:2],
-                    kps_xy=target_face.kps,
-                    offset_xy=(rx1, ry1),
-                    landmark_spec='auto',
-                    forehead_pad_frac=forehead_pad,
-                    edge_width_px=edge_width,
-                    inner_bias_px=inner_bias,
-                    gamma=1.05,
-                )
-
-                if np.any(mask_roi > 0.0):
-                    mask_roi = np.clip(mask_roi, 0.0, 1.0)
-                    preserve_roi = np.zeros_like(mask_roi, dtype=np.float32)
-
-                    preserve_mouth = bool(
-                        getattr(modules.globals, 'mouth_mask', False)
-                        or getattr(modules.globals, 'preserve_teeth', False)
-                    )
-
-                    if preserve_mouth:
-                        mouth_mask_roi = np.zeros_like(mask_roi, dtype=np.float32)
-                        kps = np.asarray(target_face.kps, dtype=np.float32)
-                        if kps.ndim == 2 and kps.shape[0] >= 5:
-                            offset = np.array([rx1, ry1], dtype=np.float32)
-                            mouth_left = kps[3] - offset
-                            mouth_right = kps[4] - offset
-                            mouth_center = (mouth_left + mouth_right) / 2.0
-                            mouth_width = float(np.linalg.norm(mouth_right - mouth_left))
-                            mouth_height = mouth_width * 0.6
-                        else:
-                            mouth_center = np.array([roi_w / 2.0, roi_h * 0.72], dtype=np.float32)
-                            mouth_width = float(roi_w * 0.20)
-                            mouth_height = float(roi_h * 0.14)
-
-                        mouth_width = max(mouth_width, 1.0)
-                        mouth_height = max(mouth_height, 1.0)
-                        mouth_axes = (
-                            max(1, min(int(round((mouth_width * 0.5) * size_scale)), roi_w // 2)),
-                            max(1, min(int(round((mouth_height * 0.5) * size_scale)), roi_h // 2)),
-                        )
-                        mouth_center_xy = (
-                            int(round(float(np.clip(mouth_center[0], 0.0, max(roi_w - 1, 0))))),
-                            int(round(float(np.clip(mouth_center[1], 0.0, max(roi_h - 1, 0))))),
-                        )
-                        cv2.ellipse(
-                            mouth_mask_roi,
-                            mouth_center_xy,
-                            mouth_axes,
-                            0,
-                            0,
-                            360,
-                            (255, 255, 255),
-                            -1,
-                        )
-                        mouth_mask_roi = _normalize_mask(mouth_mask_roi)
-                        feather = max(1, int(max(mouth_axes) / max(feather_ratio, 1.0)))
-                        if feather % 2 == 0:
-                            feather += 1
-                        if feather >= 3:
-                            mouth_mask_roi = cv2.GaussianBlur(
-                                mouth_mask_roi, (feather, feather), 0
-                            )
-                            mouth_mask_roi = _normalize_mask(mouth_mask_roi)
-                        mouth_mask_roi = _normalize_mask(mouth_mask_roi * mask_roi)
-                        preserve_roi = np.maximum(preserve_roi, mouth_mask_roi)
-
-                    if preserve_hairline:
-                        edge_band = _normalize_mask(1.0 - mask_roi)
-                        hair_weight = np.linspace(1.0, 0.0, roi_h, dtype=np.float32)[:, None]
-                        hair_mask = _normalize_mask(edge_band * (hair_weight ** 1.5))
-                        preserve_roi = np.maximum(preserve_roi, hair_mask)
-
-                    if preserve_roi.size and float(np.max(preserve_roi)) > 0.0:
-                        mask_full = np.zeros((h, w), dtype=np.float32)
-                        mask_full[ry1:ry2, rx1:rx2] = preserve_roi
-                        mask = np.clip(mask_full, 0.0, 1.0)
-                        mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
-                        composed = (
-                            original_frame.astype(np.float32) * mask_3
-                            + swapped_frame.astype(np.float32) * (1.0 - mask_3)
-                        )
-                        composed = np.clip(composed, 0, 255).astype(np.uint8)
-
-                        if getattr(modules.globals, 'show_mouth_mask_box', False):
-                            try:
-                                vis = (preserve_roi * 255.0).astype(np.uint8)
-                                contours, _ = cv2.findContours(
-                                    vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                                )
-                                cv2.drawContours(
-                                    composed[ry1:ry2, rx1:rx2], contours, -1, (0, 255, 0), 2
-                                )
-                            except Exception:
-                                pass
-                        return composed
-
-        # Final safety fallback: original ellipse heuristic
-        down = float(getattr(modules.globals, 'mask_down_size', 0.5) or 0.5)
-        size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
-        feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
-
-        ds_w = max(1, int(w * down))
-        ds_h = max(1, int(h * down))
-        mask_small = np.zeros((ds_h, ds_w), dtype=np.float32)
-
-        if has_kps:
-            kps = np.array(target_face.kps, dtype=np.float32)
-            lm_left = kps[3]
-            lm_right = kps[4]
-            mouth_center = (lm_left + lm_right) / 2.0
-            mouth_width = float(np.linalg.norm(lm_right - lm_left))
-            mouth_height = mouth_width * 0.6
-
-            cx = float(mouth_center[0])
-            cy = float(mouth_center[1])
-            ax = max(1.0, (mouth_width * 0.5) * size_scale)
-            ay = max(1.0, (mouth_height * 0.5) * size_scale)
-        else:
-            if hasattr(target_face, 'bbox') and target_face.bbox is not None:
-                x1, y1, x2, y2 = map(float, target_face.bbox)
-            else:
-                x1, y1, x2, y2 = 0.0, 0.0, float(w), float(h)
-            cx = (x1 + x2) / 2.0
-            cy = y1 + (y2 - y1) * 0.72
-            ax = max(1.0, (x2 - x1) * 0.20 * size_scale)
-            ay = max(1.0, (y2 - y1) * 0.14 * size_scale)
-
-        cx_ds = int(round(cx * down))
-        cy_ds = int(round(cy * down))
-        ax_ds = max(1, int(round(ax * down)))
-        ay_ds = max(1, int(round(ay * down)))
-        cv2.ellipse(mask_small, (cx_ds, cy_ds), (ax_ds, ay_ds), 0, 0, 360, (255, 255, 255), -1)
-        mask_small = _normalize_mask(mask_small)
-
-        feather = max(1, int(max(ax_ds, ay_ds) / max(feather_ratio, 1.0)))
-        if feather % 2 == 0:
-            feather += 1
-        if feather >= 3:
-            mask_small = cv2.GaussianBlur(mask_small, (feather, feather), 0)
-            mask_small = _normalize_mask(mask_small)
-
-        mask = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_LINEAR)
-        mask = _normalize_mask(mask)
-        mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
-        composed = (original_frame.astype(np.float32) * mask_3 + swapped_frame.astype(np.float32) * (1.0 - mask_3))
-        composed = np.clip(composed, 0, 255).astype(np.uint8)
-
-        if getattr(modules.globals, 'show_mouth_mask_box', False):
-            cv2.ellipse(
-                composed,
-                (int(round(cx)), int(round(cy))),
-                (int(round(ax)), int(round(ay))),
-                0, 0, 360, (0, 255, 0), 2,
+        landmarks = _extract_face_landmarks(target_face)
+        if landmarks is None or len(landmarks) < 3:
+            # Use the ROI corners as a minimal convex hull fallback
+            landmarks = np.array(
+                [
+                    [rx1, ry1],
+                    [rx2, ry1],
+                    [rx2, ry2],
+                    [rx1, ry2],
+                ],
+                dtype=np.float32,
             )
+
+        edge_px = max(12.0, 0.08 * float(max(roi_w, roi_h)))
+        mask = build_skin_sdf_mask(
+            roi_shape=(roi_h, roi_w),
+            kps_xy=landmarks,
+            offset_xy=(rx1, ry1),
+            landmark_spec="auto",
+            forehead_pad_frac=0.10,
+            edge_width_px=edge_px,
+            inner_bias_px=1.5,
+            gamma=1.05,
+        )
+
+        if not mask.size or float(mask.max()) <= 0.0:
+            return swapped_frame
+
+        swap_weight = np.clip(mask, 0.0, 1.0)
+
+        size_scale = float(getattr(modules.globals, "mask_size", 1.0) or 1.0)
+        feather_ratio = float(getattr(modules.globals, "mask_feather_ratio", 8) or 8)
+
+        if getattr(modules.globals, "mouth_mask", False):
+            mouth_mask = _build_ellipse_mask(
+                (roi_h, roi_w),
+                target_face,
+                (rx1, ry1),
+                size_scale=size_scale,
+                height_scale=0.6,
+                feather_ratio=feather_ratio,
+            )
+            if isinstance(mouth_mask, np.ndarray):
+                swap_weight *= 1.0 - np.clip(mouth_mask, 0.0, 1.0)
+
+        if getattr(modules.globals, "preserve_teeth", False):
+            teeth_mask = _build_ellipse_mask(
+                (roi_h, roi_w),
+                target_face,
+                (rx1, ry1),
+                size_scale=size_scale * 0.55,
+                height_scale=0.45,
+                feather_ratio=max(3.0, feather_ratio * 0.75),
+            )
+            if isinstance(teeth_mask, np.ndarray):
+                swap_weight *= 1.0 - np.clip(teeth_mask, 0.0, 1.0)
+
+        if getattr(modules.globals, "preserve_hairline", False):
+            hair_mask = _build_hairline_mask((roi_h, roi_w), mask)
+            if isinstance(hair_mask, np.ndarray) and hair_mask.size:
+                swap_weight *= 1.0 - np.clip(hair_mask, 0.0, 1.0)
+
+        swap_weight = np.clip(swap_weight, 0.0, 1.0)
+        mask_3 = np.repeat(swap_weight[:, :, None], 3, axis=2)
+        composed_roi = (
+            swapped_roi.astype(np.float32) * mask_3
+            + original_roi.astype(np.float32) * (1.0 - mask_3)
+        )
+        composed_roi = np.clip(composed_roi, 0, 255).astype(np.uint8)
+
+        composed = swapped_frame.copy()
+        composed[ry1:ry2, rx1:rx2] = composed_roi
+
+        if getattr(modules.globals, "show_mouth_mask_box", False):
+            try:
+                vis = (np.clip(1.0 - swap_weight, 0.0, 1.0) * 255).astype(np.uint8)
+                contours, _ = cv2.findContours(vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                cv2.drawContours(composed[ry1:ry2, rx1:rx2], contours, -1, (0, 255, 0), 2)
+            except Exception:
+                pass
         return composed
     except Exception as e:
         update_status(f"Mouth mask failed: {e}", NAME)
