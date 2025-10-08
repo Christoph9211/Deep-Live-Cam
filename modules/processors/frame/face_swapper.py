@@ -576,28 +576,90 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
                 )
 
                 if np.any(mask_roi > 0.0):
-                    mask_full = np.zeros((h, w), dtype=np.float32)
-                    mask_full[ry1:ry2, rx1:rx2] = mask_roi
-                    mask = np.clip(mask_full, 0.0, 1.0)
-                    mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
-                    composed = (
-                        original_frame.astype(np.float32) * mask_3
-                        + swapped_frame.astype(np.float32) * (1.0 - mask_3)
-                    )
-                    composed = np.clip(composed, 0, 255).astype(np.uint8)
+                    mask_roi = np.clip(mask_roi, 0.0, 1.0)
+                    preserve_roi = np.zeros_like(mask_roi, dtype=np.float32)
 
-                    if getattr(modules.globals, 'show_mouth_mask_box', False):
-                        try:
-                            vis = (mask_roi * 255.0).astype(np.uint8)
-                            contours, _ = cv2.findContours(
-                                vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    preserve_mouth = bool(
+                        getattr(modules.globals, 'mouth_mask', False)
+                        or getattr(modules.globals, 'preserve_teeth', False)
+                    )
+
+                    if preserve_mouth:
+                        mouth_mask_roi = np.zeros_like(mask_roi, dtype=np.float32)
+                        kps = np.asarray(target_face.kps, dtype=np.float32)
+                        if kps.ndim == 2 and kps.shape[0] >= 5:
+                            offset = np.array([rx1, ry1], dtype=np.float32)
+                            mouth_left = kps[3] - offset
+                            mouth_right = kps[4] - offset
+                            mouth_center = (mouth_left + mouth_right) / 2.0
+                            mouth_width = float(np.linalg.norm(mouth_right - mouth_left))
+                            mouth_height = mouth_width * 0.6
+                        else:
+                            mouth_center = np.array([roi_w / 2.0, roi_h * 0.72], dtype=np.float32)
+                            mouth_width = float(roi_w * 0.20)
+                            mouth_height = float(roi_h * 0.14)
+
+                        mouth_width = max(mouth_width, 1.0)
+                        mouth_height = max(mouth_height, 1.0)
+                        mouth_axes = (
+                            max(1, min(int(round((mouth_width * 0.5) * size_scale)), roi_w // 2)),
+                            max(1, min(int(round((mouth_height * 0.5) * size_scale)), roi_h // 2)),
+                        )
+                        mouth_center_xy = (
+                            int(round(float(np.clip(mouth_center[0], 0.0, max(roi_w - 1, 0))))),
+                            int(round(float(np.clip(mouth_center[1], 0.0, max(roi_h - 1, 0))))),
+                        )
+                        cv2.ellipse(
+                            mouth_mask_roi,
+                            mouth_center_xy,
+                            mouth_axes,
+                            0,
+                            0,
+                            360,
+                            (255, 255, 255),
+                            -1,
+                        )
+                        mouth_mask_roi = _normalize_mask(mouth_mask_roi)
+                        feather = max(1, int(max(mouth_axes) / max(feather_ratio, 1.0)))
+                        if feather % 2 == 0:
+                            feather += 1
+                        if feather >= 3:
+                            mouth_mask_roi = cv2.GaussianBlur(
+                                mouth_mask_roi, (feather, feather), 0
                             )
-                            cv2.drawContours(
-                                composed[ry1:ry2, rx1:rx2], contours, -1, (0, 255, 0), 2
-                            )
-                        except Exception:
-                            pass
-                    return composed
+                            mouth_mask_roi = _normalize_mask(mouth_mask_roi)
+                        mouth_mask_roi = _normalize_mask(mouth_mask_roi * mask_roi)
+                        preserve_roi = np.maximum(preserve_roi, mouth_mask_roi)
+
+                    if preserve_hairline:
+                        edge_band = _normalize_mask(1.0 - mask_roi)
+                        hair_weight = np.linspace(1.0, 0.0, roi_h, dtype=np.float32)[:, None]
+                        hair_mask = _normalize_mask(edge_band * (hair_weight ** 1.5))
+                        preserve_roi = np.maximum(preserve_roi, hair_mask)
+
+                    if preserve_roi.size and float(np.max(preserve_roi)) > 0.0:
+                        mask_full = np.zeros((h, w), dtype=np.float32)
+                        mask_full[ry1:ry2, rx1:rx2] = preserve_roi
+                        mask = np.clip(mask_full, 0.0, 1.0)
+                        mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
+                        composed = (
+                            original_frame.astype(np.float32) * mask_3
+                            + swapped_frame.astype(np.float32) * (1.0 - mask_3)
+                        )
+                        composed = np.clip(composed, 0, 255).astype(np.uint8)
+
+                        if getattr(modules.globals, 'show_mouth_mask_box', False):
+                            try:
+                                vis = (preserve_roi * 255.0).astype(np.uint8)
+                                contours, _ = cv2.findContours(
+                                    vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                                )
+                                cv2.drawContours(
+                                    composed[ry1:ry2, rx1:rx2], contours, -1, (0, 255, 0), 2
+                                )
+                            except Exception:
+                                pass
+                        return composed
 
         # Final safety fallback: original ellipse heuristic
         down = float(getattr(modules.globals, 'mask_down_size', 0.5) or 0.5)
