@@ -534,7 +534,71 @@ def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: 
                     pass
             return composed
 
-        # 2) Fallback: ellipse heuristic
+        # 2) Fallback: signed-distance hull mask from facial landmarks
+        has_kps = hasattr(target_face, 'kps') and target_face.kps is not None
+        if has_kps:
+            preserve_hairline = getattr(modules.globals, 'preserve_hairline', False)
+            size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
+            feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
+
+            if hasattr(target_face, 'bbox') and target_face.bbox is not None:
+                rx1, ry1, rx2, ry2 = _expand_bbox(tuple(target_face.bbox), w, h, pad=0.08)
+            else:
+                kps = np.asarray(target_face.kps, dtype=np.float32)
+                x1, y1 = np.min(kps, axis=0)
+                x2, y2 = np.max(kps, axis=0)
+                rx1 = max(0, int(math.floor(x1)))
+                ry1 = max(0, int(math.floor(y1)))
+                rx2 = min(w, int(math.ceil(x2)))
+                ry2 = min(h, int(math.ceil(y2)))
+                if rx2 <= rx1 or ry2 <= ry1:
+                    rx1, ry1, rx2, ry2 = 0, 0, w, h
+
+            roi_o = original_frame[ry1:ry2, rx1:rx2]
+            roi_s = swapped_frame[ry1:ry2, rx1:rx2]
+            if roi_o.size and roi_s.size:
+                roi_h, roi_w = roi_s.shape[:2]
+                longest = float(max(roi_h, roi_w))
+                edge_width = max(4.0, longest / max(feather_ratio * 3.0, 1.0))
+                inner_bias = (1.0 - size_scale) * (0.08 * longest)
+                forehead_pad = 0.18 if preserve_hairline else 0.10
+
+                mask_roi = build_skin_sdf_mask(
+                    roi_shape=roi_s.shape[:2],
+                    kps_xy=target_face.kps,
+                    offset_xy=(rx1, ry1),
+                    landmark_spec='auto',
+                    forehead_pad_frac=forehead_pad,
+                    edge_width_px=edge_width,
+                    inner_bias_px=inner_bias,
+                    gamma=1.05,
+                )
+
+                if np.any(mask_roi > 0.0):
+                    mask_full = np.zeros((h, w), dtype=np.float32)
+                    mask_full[ry1:ry2, rx1:rx2] = mask_roi
+                    mask = np.clip(mask_full, 0.0, 1.0)
+                    mask_3 = np.repeat(mask[:, :, None], 3, axis=2)
+                    composed = (
+                        original_frame.astype(np.float32) * mask_3
+                        + swapped_frame.astype(np.float32) * (1.0 - mask_3)
+                    )
+                    composed = np.clip(composed, 0, 255).astype(np.uint8)
+
+                    if getattr(modules.globals, 'show_mouth_mask_box', False):
+                        try:
+                            vis = (mask_roi * 255.0).astype(np.uint8)
+                            contours, _ = cv2.findContours(
+                                vis, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                            )
+                            cv2.drawContours(
+                                composed[ry1:ry2, rx1:rx2], contours, -1, (0, 255, 0), 2
+                            )
+                        except Exception:
+                            pass
+                    return composed
+
+        # Final safety fallback: original ellipse heuristic
         down = float(getattr(modules.globals, 'mask_down_size', 0.5) or 0.5)
         size_scale = float(getattr(modules.globals, 'mask_size', 1.0) or 1.0)
         feather_ratio = float(getattr(modules.globals, 'mask_feather_ratio', 8) or 8)
