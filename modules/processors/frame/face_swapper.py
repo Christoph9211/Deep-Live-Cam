@@ -442,6 +442,172 @@ def get_face_swapper() -> Any:
             # --- MODIFICATION END ---
     return FACE_SWAPPER
 
+def build_skin_sdf_mask(roi_shape, kps_xy, offset_xy, landmark_spec, forehead_pad_frac, edge_width_px, inner_bias_px, gamma):
+    """
+    Build a soft skin mask using a signed-distance-field (SDF) computed from facial landmarks.
+
+    Args:
+        roi_shape (Tuple[int, int]): Height and width of the ROI the mask should cover.
+        kps_xy (np.ndarray): Absolute (x, y) face keypoints.
+        offset_xy (Tuple[float, float]): Absolute offset (x, y) applied to move keypoints into ROI space.
+        landmark_spec (str): Landmark selection hint. Currently informational, default 'auto'.
+        forehead_pad_frac (float): Relative padding applied to extend the mask upwards toward the forehead.
+        edge_width_px (float): Width of the transition band for the SDF in pixels.
+        inner_bias_px (float): Positive shrinks the mask inward, negative expands it.
+        gamma (float): Gamma correction applied to the final mask.
+
+    Returns:
+        np.ndarray: Float32 mask with values in [0, 1].
+    """
+    h, w = int(roi_shape[0]), int(roi_shape[1])
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    try:
+        if kps_xy is None:
+            return mask
+
+        pts = np.asarray(kps_xy, dtype=np.float32).reshape(-1, 2)
+        if pts.size == 0:
+            return mask
+
+        offset = np.asarray(offset_xy, dtype=np.float32).reshape(2)
+        pts_roi = pts - offset
+
+        # Keep points that are reasonably close to the ROI; discard extreme outliers.
+        pad_w = max(16.0, float(w) * 0.25)
+        pad_h = max(16.0, float(h) * 0.25)
+        valid = (
+            (pts_roi[:, 0] > -pad_w)
+            & (pts_roi[:, 0] < (w - 1 + pad_w))
+            & (pts_roi[:, 1] > -pad_h)
+            & (pts_roi[:, 1] < (h - 1 + pad_h))
+        )
+        pts_roi = pts_roi[valid]
+        if pts_roi.shape[0] < 3:
+            return mask
+
+        pts_roi = np.ascontiguousarray(pts_roi, dtype=np.float32)
+        spec = (str(landmark_spec).strip().lower() if landmark_spec else 'auto')
+
+        hull_pts: Optional[np.ndarray]
+
+        if pts_roi.shape[0] >= 8 and spec != 'heuristic':
+            try:
+                hull_pts = cv2.convexHull(pts_roi).reshape(-1, 2)
+            except Exception:
+                hull_pts = None
+        else:
+            hull_pts = None
+
+        if hull_pts is None:
+            base = pts_roi.copy()
+            if base.shape[0] < 3:
+                return mask
+
+            # Estimate semantic anchors (eyes, nose, mouth corners) from sparse landmarks.
+            idx_by_y = np.argsort(base[:, 1])
+            eye_idxs = idx_by_y[: min(2, base.shape[0])]
+            mouth_idxs = idx_by_y[-min(2, base.shape[0]):]
+            remaining = [i for i in range(base.shape[0]) if i not in eye_idxs and i not in mouth_idxs]
+
+            if len(eye_idxs) < 2 or len(mouth_idxs) < 2:
+                try:
+                    hull_pts = cv2.convexHull(base).reshape(-1, 2)
+                except Exception:
+                    return mask
+            else:
+                left_eye = base[eye_idxs[np.argmin(base[eye_idxs, 0])]]
+                right_eye = base[eye_idxs[np.argmax(base[eye_idxs, 0])]]
+                mouth_left = base[mouth_idxs[np.argmin(base[mouth_idxs, 0])]]
+                mouth_right = base[mouth_idxs[np.argmax(base[mouth_idxs, 0])]]
+                if remaining:
+                    nose = base[remaining[0]]
+                else:
+                    nose = (left_eye + right_eye) * 0.5
+
+                eye_vec = right_eye - left_eye
+                eye_dist = float(np.linalg.norm(eye_vec))
+                if eye_dist < 1e-4:
+                    try:
+                        hull_pts = cv2.convexHull(base).reshape(-1, 2)
+                    except Exception:
+                        return mask
+                else:
+                    x_axis = eye_vec / eye_dist
+                    y_axis = np.array([-x_axis[1], x_axis[0]], dtype=np.float32)
+                    eye_center = (left_eye + right_eye) * 0.5
+                    if np.dot(nose - eye_center, y_axis) < 0.0:
+                        y_axis = -y_axis
+
+                    mouth_center = (mouth_left + mouth_right) * 0.5
+                    base_height = max(float(np.max(base[:, 1]) - np.min(base[:, 1])), eye_dist * 1.4)
+                    base_width = max(float(np.max(base[:, 0]) - np.min(base[:, 0])), eye_dist * 1.2)
+
+                    up = (0.35 * base_height) + (float(forehead_pad_frac) * base_height)
+                    down = 0.65 * base_height
+                    side = 0.55 * base_width
+
+                    chin = mouth_center + y_axis * down
+                    jaw_left = mouth_left + y_axis * (0.40 * base_height) - x_axis * (0.20 * base_width)
+                    jaw_right = mouth_right + y_axis * (0.40 * base_height) + x_axis * (0.20 * base_width)
+                    cheek_left = left_eye + y_axis * (0.25 * base_height) - x_axis * (0.60 * base_width)
+                    cheek_right = right_eye + y_axis * (0.25 * base_height) + x_axis * (0.60 * base_width)
+                    temple_left = left_eye - y_axis * (0.05 * base_height) - x_axis * (0.85 * base_width)
+                    temple_right = right_eye - y_axis * (0.05 * base_height) + x_axis * (0.85 * base_width)
+                    forehead_center = eye_center - y_axis * up
+                    forehead_left = forehead_center - x_axis * side
+                    forehead_right = forehead_center + x_axis * side
+
+                    augmented = np.vstack([
+                        base,
+                        jaw_left,
+                        chin,
+                        jaw_right,
+                        cheek_right,
+                        temple_right,
+                        forehead_right,
+                        forehead_center,
+                        forehead_left,
+                        temple_left,
+                        cheek_left,
+                    ])
+                    try:
+                        hull_pts = cv2.convexHull(np.ascontiguousarray(augmented, dtype=np.float32)).reshape(-1, 2)
+                    except Exception:
+                        hull_pts = None
+
+        if hull_pts is None or hull_pts.shape[0] < 3:
+            return mask
+
+        hull_pts[:, 0] = np.clip(hull_pts[:, 0], 0.0, float(w - 1))
+        hull_pts[:, 1] = np.clip(hull_pts[:, 1], 0.0, float(h - 1))
+        hull_pts = np.ascontiguousarray(hull_pts.astype(np.int32))
+        if hull_pts.shape[0] < 3 or cv2.contourArea(hull_pts) <= 1.0:
+            return mask
+
+        solid = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(solid, hull_pts, 255)
+        if not np.any(solid):
+            return mask
+
+        dist_inside = cv2.distanceTransform(solid, cv2.DIST_L2, 3)
+        dist_outside = cv2.distanceTransform(255 - solid, cv2.DIST_L2, 3)
+        sdf = dist_inside - dist_outside
+
+        sdf -= float(inner_bias_px or 0.0)
+        edge_w = max(float(edge_width_px), 1e-3)
+        mask = 0.5 + 0.5 * np.tanh(sdf / edge_w)
+        mask = np.clip(mask, 0.0, 1.0, out=mask)
+
+        gamma_val = float(gamma or 1.0)
+        if gamma_val != 1.0:
+            mask = np.clip(mask, 1e-6, 1.0, out=mask)
+            mask = mask ** gamma_val
+
+        return mask.astype(np.float32)
+    except Exception:
+        return mask
+
 
 def _apply_mouth_mask(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame:  # type: ignore
     """Blend original mouth region back using semantic parsing when available."""
