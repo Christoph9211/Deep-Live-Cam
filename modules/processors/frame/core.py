@@ -107,19 +107,19 @@ def multi_process_frame(
         """
         while True:
             batch: List[str] = []
-            try:
-                # Pull up to effective_batch_size items without blocking
-                for _ in range(effective_batch_size):
+            # Pull up to effective_batch_size items without blocking
+            for _ in range(effective_batch_size):
+                try:
                     batch.append(frame_queue.get_nowait())
-            except Empty:
-                # Stop filling this batch when the queue runs dry
-                break
+                except Empty:
+                    break
 
-            if not batch:
-                # No items were retrieved, so the queue was empty. Worker can exit.
-                break
+            if batch:
+                process_frames(source_path, batch, progress)
+                continue
 
-            process_frames(source_path, batch, progress)
+            # No items were retrieved, so the queue was empty. Worker can exit.
+            break
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(worker) for _ in range(max_workers)]
