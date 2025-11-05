@@ -260,7 +260,7 @@ def _expand_bbox(bbox: Tuple[float, float, float, float], w: int, h: int, pad: f
     return xi1, yi1, xi2, yi2
 
 
-def _apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
+def apply_occlusion_preserve(original_frame: Frame, swapped_frame: Frame, target_face: Face) -> Frame: # type: ignore
     """
     Preserves foreground occluders (e.g., hands, props) by reinstating
     original pixels where strong edges present in the original are missing
@@ -866,7 +866,7 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     # Preserve foreground occluders (hands/props) by reinstating
     # original pixels where strong edges were removed by swapping
     if getattr(modules.globals, 'occlusion_aware_compositing', True):
-        swapped = _apply_occlusion_preserve(original_frame, swapped, target_face)
+        swapped = apply_occlusion_preserve(original_frame, swapped, target_face)
     return swapped
 
 
