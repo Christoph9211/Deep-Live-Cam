@@ -66,3 +66,9 @@ segmenter_backend: str = 'auto'
 occlusion_aware_compositing = True
 # Sensitivity 0.0 (conservative) .. 1.0 (aggressive)
 occlusion_sensitivity = 0.5
+
+# Pixel-boost face swap pipeline options
+use_pixel_boost_pipeline = False
+pixel_boost_count = 0
+face_swapper_template = 'arcface'
+face_swapper_crop_size = 128
