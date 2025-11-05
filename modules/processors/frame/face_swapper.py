@@ -35,6 +35,219 @@ FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
 
+ARC_FACE_TEMPLATE = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
+
+# The FFHQ template points are adapted from the public alignment used by StyleGAN/FFHQ datasets.
+FFHQ_TEMPLATE = np.array(
+    [
+        [192.98138, 239.94708],
+        [318.90277, 240.1936],
+        [256.63416, 314.01935],
+        [201.26117, 371.41043],
+        [312.1185, 371.15118],
+    ],
+    dtype=np.float32,
+)
+
+
+def _reference_landmarks(template: str, image_size: int, scale: float = 1.0) -> np.ndarray:
+    template = template.lower()
+    if template == 'arcface':
+        if image_size % 112 == 0:
+            ratio = float(image_size) / 112.0
+            diff_x = 0.0
+        else:
+            ratio = float(image_size) / 128.0
+            diff_x = 8.0 * ratio
+        dst = ARC_FACE_TEMPLATE * ratio
+        dst[:, 0] += diff_x
+    elif template == 'ffhq':
+        ratio = float(image_size) / 512.0
+        dst = FFHQ_TEMPLATE * ratio
+    else:
+        raise ValueError(f"Unsupported template '{template}'.")
+
+    dst_mean = np.mean(dst, axis=0, keepdims=True)
+    dst = (dst - dst_mean) * scale + dst_mean
+    return dst.astype(np.float32)
+
+
+def warp_face_by_landmarks(
+    frame: Frame,
+    kps: np.ndarray,
+    image_size: int,
+    template: str = 'arcface',
+    scale: float = 1.0,
+    border_mode: int = cv2.BORDER_REFLECT_101,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if kps is None:
+        raise ValueError('Landmarks (kps) are required for warping.')
+    pts = np.asarray(kps, dtype=np.float32).reshape(-1, 2)
+    if pts.shape[0] < 3:
+        raise ValueError('At least three keypoints are required to compute an affine warp.')
+
+    reference = _reference_landmarks(template, image_size, scale)
+    matrix, _ = cv2.estimateAffinePartial2D(pts, reference, method=cv2.LMEDS)
+    if matrix is None:
+        matrix = cv2.getAffineTransform(pts[:3], reference[:3])
+
+    warped = cv2.warpAffine(frame, matrix, (image_size, image_size), borderMode=border_mode, flags=cv2.INTER_LINEAR)
+    inverse = cv2.invertAffineTransform(matrix.astype(np.float32))
+    return warped, matrix.astype(np.float32), inverse.astype(np.float32)
+
+
+def implode_pixel_boost(
+    frame: Frame,
+    kps: np.ndarray,
+    count: int,
+    image_size: int,
+    template: str,
+    step: float = 0.045,
+) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    crops: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    if count <= 0:
+        return crops
+    for idx in range(count):
+        scale = max(0.6, 1.0 - (idx + 1) * step)
+        crops.append(warp_face_by_landmarks(frame, kps, image_size, template=template, scale=scale))
+    return crops
+
+
+def explode_pixel_boost(
+    frame: Frame,
+    kps: np.ndarray,
+    count: int,
+    image_size: int,
+    template: str,
+    step: float = 0.045,
+) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    crops: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    if count <= 0:
+        return crops
+    for idx in range(count):
+        scale = min(1.6, 1.0 + (idx + 1) * step)
+        crops.append(warp_face_by_landmarks(frame, kps, image_size, template=template, scale=scale))
+    return crops
+
+
+def run_face_swapper_inference(
+    swapper: Any,
+    crop: np.ndarray,
+    source_embedding: np.ndarray,
+) -> np.ndarray:
+    blob = cv2.dnn.blobFromImage(
+        crop,
+        1.0 / float(getattr(swapper, 'input_std', 255.0)),
+        getattr(swapper, 'input_size', (crop.shape[1], crop.shape[0])),
+        (
+            float(getattr(swapper, 'input_mean', 0.0)),
+            float(getattr(swapper, 'input_mean', 0.0)),
+            float(getattr(swapper, 'input_mean', 0.0)),
+        ),
+        swapRB=True,
+    )
+    latent = source_embedding.reshape((1, -1)).astype(np.float32)
+    emap = getattr(swapper, 'emap', None)
+    if emap is not None:
+        latent = np.dot(latent, emap)
+    norm = np.linalg.norm(latent)
+    if norm > 0:
+        latent /= norm
+    outputs = swapper.session.run(swapper.output_names, {swapper.input_names[0]: blob, swapper.input_names[1]: latent})[0]
+    img_fake = outputs.transpose((0, 2, 3, 1))[0]
+    bgr_fake = np.clip(255.0 * img_fake, 0.0, 255.0).astype(np.uint8)[:, :, ::-1]
+    return bgr_fake
+
+
+def _swap_face_with_pixel_boost(
+    swapper: Any,
+    source_face: Face,
+    target_face: Face,
+    frame: Frame,
+) -> Optional[Frame]:
+    try:
+        template = getattr(modules.globals, 'face_swapper_template', 'arcface') or 'arcface'
+        crop_size = int(getattr(modules.globals, 'face_swapper_crop_size', getattr(swapper, 'input_size', (128, 128))[0]) or 128)
+        crop_size = max(64, crop_size)
+        pixel_boost_count = int(getattr(modules.globals, 'pixel_boost_count', 0) or 0)
+        pixel_boost_count = max(0, min(4, pixel_boost_count))
+        base_crop, base_matrix, base_inverse = warp_face_by_landmarks(
+            frame,
+            target_face.kps,
+            crop_size,
+            template=template,
+        )
+        crops: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = [(base_crop, base_matrix, base_inverse)]
+        if pixel_boost_count > 0:
+            crops.extend(
+                implode_pixel_boost(frame, target_face.kps, pixel_boost_count, crop_size, template)
+            )
+            crops.extend(
+                explode_pixel_boost(frame, target_face.kps, pixel_boost_count, crop_size, template)
+            )
+
+        input_w, input_h = getattr(swapper, 'input_size', (crop_size, crop_size))
+        input_w = int(input_w)
+        input_h = int(input_h)
+
+        warped_faces: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for crop, matrix, inverse in crops:
+            inference_crop = crop
+            if inference_crop.shape[1] != input_w or inference_crop.shape[0] != input_h:
+                inference_crop = cv2.resize(inference_crop, (input_w, input_h), interpolation=cv2.INTER_LINEAR)
+            swapped_crop = run_face_swapper_inference(swapper, inference_crop, source_face.normed_embedding)
+            if swapped_crop.shape[0] != crop.shape[0] or swapped_crop.shape[1] != crop.shape[1]:
+                swapped_crop = cv2.resize(swapped_crop, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
+            warped_faces.append((swapped_crop, matrix, inverse))
+
+        feather = max(5, int(round(crop_size * 0.18)))
+        if feather % 2 == 0:
+            feather += 1
+        accum = np.zeros_like(frame, dtype=np.float32)
+        mask_accum = np.zeros((frame.shape[0], frame.shape[1], 1), dtype=np.float32)
+        for swapped_crop, _, inverse in warped_faces:
+            mask = np.ones((swapped_crop.shape[0], swapped_crop.shape[1]), dtype=np.float32)
+            if feather >= 3:
+                mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+            warped_face = cv2.warpAffine(
+                swapped_crop.astype(np.float32),
+                inverse,
+                (frame.shape[1], frame.shape[0]),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REFLECT,
+            )
+            warped_mask = cv2.warpAffine(
+                mask,
+                inverse,
+                (frame.shape[1], frame.shape[0]),
+                flags=cv2.INTER_LINEAR,
+                borderValue=0.0,
+            )
+            warped_mask = warped_mask[:, :, None]
+            accum += warped_face * warped_mask
+            mask_accum += warped_mask
+
+        if not warped_faces:
+            return None
+
+        mask_safe = np.maximum(mask_accum, 1e-5)
+        face_region = accum / mask_safe
+        mask_mean = np.clip(mask_accum / max(len(warped_faces), 1), 0.0, 1.0)
+        blended = face_region * mask_mean + frame.astype(np.float32) * (1.0 - mask_mean)
+        return np.clip(blended, 0.0, 255.0).astype(np.uint8)
+    except Exception as exc:
+        update_status(f"Pixel boost pipeline failed: {exc}", NAME)
+        return None
+
 # -----------------------------
 # One-Euro filter for smoothing
 # -----------------------------
@@ -854,7 +1067,14 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         if (not getattr(modules.globals, 'smoothing_stream_only', True)) or _SMOOTH_IN_STREAM:
             _smooth_face_inplace(target_face, _smoothing_dt())
 
-    swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
+    use_pixel_pipeline = getattr(modules.globals, 'use_pixel_boost_pipeline', False)
+    swapped: Optional[Frame] = None
+    if use_pixel_pipeline:
+        swapped = _swap_face_with_pixel_boost(swapper, source_face, target_face, temp_frame)
+        if swapped is None:
+            update_status('Falling back to InsightFace swapper pipeline.', NAME)
+    if swapped is None:
+        swapped = swapper.get(temp_frame, target_face, source_face, paste_back=True)
 
     # Apply region preservation if any toggle is enabled
     if (

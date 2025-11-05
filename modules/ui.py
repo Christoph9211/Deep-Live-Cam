@@ -122,6 +122,10 @@ def save_switch_states():
         # Occlusion preserve
         "occlusion_aware_compositing": modules.globals.occlusion_aware_compositing,
         "occlusion_sensitivity": modules.globals.occlusion_sensitivity,
+        "use_pixel_boost_pipeline": modules.globals.use_pixel_boost_pipeline,
+        "pixel_boost_count": modules.globals.pixel_boost_count,
+        "face_swapper_template": modules.globals.face_swapper_template,
+        "face_swapper_crop_size": modules.globals.face_swapper_crop_size,
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -164,6 +168,10 @@ def load_switch_states():
         # Occlusion preserve
         modules.globals.occlusion_aware_compositing = switch_states.get("occlusion_aware_compositing", modules.globals.occlusion_aware_compositing)
         modules.globals.occlusion_sensitivity = switch_states.get("occlusion_sensitivity", modules.globals.occlusion_sensitivity)
+        modules.globals.use_pixel_boost_pipeline = switch_states.get("use_pixel_boost_pipeline", modules.globals.use_pixel_boost_pipeline)
+        modules.globals.pixel_boost_count = switch_states.get("pixel_boost_count", modules.globals.pixel_boost_count)
+        modules.globals.face_swapper_template = switch_states.get("face_swapper_template", modules.globals.face_swapper_template)
+        modules.globals.face_swapper_crop_size = switch_states.get("face_swapper_crop_size", modules.globals.face_swapper_crop_size)
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
@@ -563,6 +571,74 @@ def open_advanced_popup(root: ctk.CTk) -> None:
     occ_slider.set(float(modules.globals.occlusion_sensitivity))
     occ_slider.grid(row=row+1, column=1, padx=10, pady=6, sticky="ew")
     row += 2
+
+    # Pixel boost pipeline
+    pixel_pipeline_var = ctk.BooleanVar(value=modules.globals.use_pixel_boost_pipeline)
+    pixel_pipeline_switch = ctk.CTkSwitch(
+        frame,
+        text=_("Pixel Boost Pipeline"),
+        variable=pixel_pipeline_var,
+        cursor="hand2",
+        command=lambda: (
+            setattr(modules.globals, "use_pixel_boost_pipeline", pixel_pipeline_var.get()),
+            save_switch_states(),
+        ),
+    )
+    pixel_pipeline_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    pixel_boost_label = ctk.CTkLabel(frame, text=f"Pixel Boost Count: {int(modules.globals.pixel_boost_count)}")
+    pixel_boost_label.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+
+    def on_pixel_boost_change(val: float) -> None:
+        modules.globals.pixel_boost_count = int(round(val))
+        pixel_boost_label.configure(text=f"Pixel Boost Count: {modules.globals.pixel_boost_count}")
+        save_switch_states()
+
+    pixel_boost_slider = ctk.CTkSlider(frame, from_=0, to=4, number_of_steps=4, command=on_pixel_boost_change, width=200)
+    pixel_boost_slider.set(int(max(0, min(4, modules.globals.pixel_boost_count))))
+    pixel_boost_slider.grid(row=row + 1, column=1, padx=10, pady=6, sticky="ew")
+    row += 2
+
+    template_label = ctk.CTkLabel(frame, text=_("Face Template"))
+    template_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+    template_var = ctk.StringVar(value=str(modules.globals.face_swapper_template))
+    template_menu = ctk.CTkOptionMenu(
+        frame,
+        variable=template_var,
+        values=["arcface", "ffhq"],
+        command=lambda v: (
+            setattr(modules.globals, "face_swapper_template", v),
+            save_switch_states(),
+        ),
+    )
+    template_menu.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    size_label = ctk.CTkLabel(frame, text=_("Crop Size"))
+    size_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    size_values = ["128", "192", "224", "256", "320", "384", "448", "512"]
+    if str(modules.globals.face_swapper_crop_size) not in size_values:
+        size_values.append(str(modules.globals.face_swapper_crop_size))
+        size_values = sorted(size_values, key=lambda x: int(x))
+    size_var = ctk.StringVar(value=str(modules.globals.face_swapper_crop_size))
+
+    def on_size_change(value: str) -> None:
+        try:
+            modules.globals.face_swapper_crop_size = int(value)
+        except ValueError:
+            modules.globals.face_swapper_crop_size = 128
+        size_var.set(str(modules.globals.face_swapper_crop_size))
+        save_switch_states()
+
+    size_menu = ctk.CTkOptionMenu(
+        frame,
+        variable=size_var,
+        values=size_values,
+        command=on_size_change,
+    )
+    size_menu.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
 
     # Smoothing toggles
     smoothing_var = ctk.BooleanVar(value=modules.globals.smoothing_enabled)
