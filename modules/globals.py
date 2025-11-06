@@ -79,6 +79,8 @@ occlusion_sensitivity = 0.5
 # Pixel-boost face swap pipeline options
 use_pixel_boost_pipeline = False
 pixel_boost_count = 0
+# Deformable alignment for pixel-boost crops so swapped faces follow the target pose.
+align_to_target_pose = True
 FACE_SWAPPER_MODEL_OPTIONS: Dict[str, Dict[str, Any]] = {
     "inswapper_128": {
         "label": "InSwapper 1.0 (128)",
