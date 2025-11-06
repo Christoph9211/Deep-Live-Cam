@@ -23,6 +23,7 @@ import tensorflow
 import modules.globals
 import modules.metadata
 import modules.ui as ui
+from modules.face_landmarker import available_landmark_sets
 from modules.processors.frame.core import get_frame_processors_modules
 from modules.utilities import (
     has_image_extension,
@@ -73,6 +74,7 @@ def parse_args() -> None:
     program.add_argument('--execution-provider', help='execution provider', dest='execution_provider', default=['cpu'], choices=suggest_execution_providers(), nargs='+')
     program.add_argument('--execution-threads', help='number of execution threads', dest='execution_threads', type=int, default=suggest_execution_threads())
     program.add_argument('--segmenter-backend', help='semantic segmenter backend', dest='segmenter_backend', default='auto', choices=['auto', 'mediapipe', 'bisenet'])
+    program.add_argument('--face-landmark-set', help='preferred landmark model set', dest='face_landmark_set', default='auto', choices=available_landmark_sets())
     # Landmark smoothing (One-Euro)
     program.add_argument('--smoothing', help='enable One-Euro landmark smoothing', dest='smoothing_enabled', action='store_true', default=False)
     program.add_argument('--smoothing-stream-only', help='apply smoothing only in streaming/live paths', dest='smoothing_stream_only', action='store_true', default=True)
@@ -115,6 +117,7 @@ def parse_args() -> None:
     modules.globals.execution_threads = args.execution_threads
     modules.globals.lang = args.lang
     modules.globals.segmenter_backend = args.segmenter_backend
+    modules.globals.face_landmark_set = args.face_landmark_set
     # Smoothing globals
     modules.globals.smoothing_enabled = args.smoothing_enabled
     modules.globals.smoothing_stream_only = args.smoothing_stream_only

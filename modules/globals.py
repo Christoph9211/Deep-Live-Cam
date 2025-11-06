@@ -33,6 +33,7 @@ execution_threads = 16
 headless = None
 log_level = "error"
 fp_ui: Dict[str, bool] = {"face_enhancer": False}
+face_landmark_set: str = 'auto'
 camera_input_combobox = None
 webcam_preview_running = False
 show_fps = False

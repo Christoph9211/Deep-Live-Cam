@@ -20,6 +20,7 @@ import modules.processors.frame.core
 # If it's part of modules.core, it might already be accessible via modules.core.update_status
 from modules.core import update_status
 from modules.face_analyser import get_one_face, get_many_faces, default_source_face
+from modules.face_landmarker import best_landmarks_68
 from modules.typing import Face, Frame
 from modules.utilities import conditional_download, resolve_relative_path, is_image, is_video
 from modules.cluster_analysis import find_closest_centroid
@@ -67,24 +68,15 @@ FFHQ_TEMPLATE = np.array(
 
 
 def _extract_landmarks_68(face: Face) -> Optional[np.ndarray]:
-    """Attempt to extract 68 landmark coordinates from an InsightFace face."""
-    candidates = [
-        getattr(face, "landmark_2d_68", None),
-        getattr(face, "landmark_3d_68", None),
-        getattr(face, "landmark_2d_106", None),
-    ]
-    for data in candidates:
-        if data is None:
-            continue
-        arr = np.asarray(data, dtype=np.float32)
-        if arr.ndim == 3 and arr.shape[1] >= 2:
-            arr = arr[:, :, :2].reshape(arr.shape[0], 2)
-        if arr.ndim == 2 and arr.shape[1] >= 2 and arr.shape[0] >= 3:
-            if arr.shape[0] >= 68:
-                return arr[:68, :2]
-            # Fallback: accept any dense landmark set >=68 by sampling first 68
-            if arr.shape[0] > 68:
-                return arr[:68, :2]
+    landmarks = best_landmarks_68(face)
+    if landmarks is None:
+        return None
+    arr = np.asarray(landmarks, dtype=np.float32)
+    if arr.ndim == 2 and arr.shape[1] >= 2:
+        if arr.shape[0] >= 68:
+            return arr[:68, :2]
+        if arr.shape[0] > 68:
+            return arr[:68, :2]
     return None
 
 
