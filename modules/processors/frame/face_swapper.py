@@ -20,7 +20,7 @@ import modules.processors.frame.core
 # If it's part of modules.core, it might already be accessible via modules.core.update_status
 from modules.core import update_status
 from modules.face_analyser import get_one_face, get_many_faces, default_source_face
-from modules.face_landmarker import best_landmarks_68
+from modules.face_landmarker import best_landmarks_68, detect_face_landmarks
 from modules.typing import Face, Frame
 from modules.utilities import conditional_download, resolve_relative_path, is_image, is_video
 from modules.cluster_analysis import find_closest_centroid
@@ -43,6 +43,10 @@ FACE_SWAPPER = None
 FACE_SWAPPER_MODEL_KEY: Optional[str] = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
+
+# Align pixel-boost crops to the target face pose using deformable warping.
+# This remains opt-out so existing behaviour can be restored when desired.
+align_to_target_pose: bool = True
 
 ARC_FACE_TEMPLATE = np.array(
     [
@@ -89,6 +93,136 @@ def _transform_landmarks(matrix: np.ndarray, landmarks: np.ndarray) -> np.ndarra
     hom = np.concatenate([pts[:, :2], ones], axis=1)
     transformed = np.dot(matrix.astype(np.float32), hom.T).T
     return transformed[:, :2]
+
+
+def _detect_landmarks_for_crop(crop: np.ndarray) -> Optional[np.ndarray]:
+    """Detect 68 landmarks within a cropped face image."""
+
+    if crop is None or crop.size == 0:
+        return None
+    h, w = crop.shape[:2]
+    try:
+        result = detect_face_landmarks(
+            crop,
+            (0.0, 0.0, float(w), float(h)),
+            0.0,
+        )
+    except Exception:
+        return None
+    if result is None or result.points is None:
+        return None
+    pts = np.asarray(result.points, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] < 68 or pts.shape[1] < 2:
+        return None
+    return pts[:68, :2]
+
+
+def _warp_crop_to_landmarks(
+    crop: np.ndarray,
+    swapped_landmarks: np.ndarray,
+    target_landmarks: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Warp ``crop`` so that ``swapped_landmarks`` align with ``target_landmarks``."""
+
+    src = np.asarray(swapped_landmarks, dtype=np.float32)
+    dst = np.asarray(target_landmarks, dtype=np.float32)
+    if (
+        crop is None
+        or crop.size == 0
+        or src.ndim != 2
+        or dst.ndim != 2
+        or src.shape[0] < 3
+        or dst.shape[0] < 3
+        or src.shape[0] != dst.shape[0]
+    ):
+        return None
+
+    h, w = crop.shape[:2]
+    rect = (0, 0, w, h)
+    subdiv = cv2.Subdiv2D(rect)
+    for point in dst:
+        x, y = float(point[0]), float(point[1])
+        # Clamp to image bounds to keep Subdiv2D stable.
+        x = min(max(x, 0.0), float(w - 1))
+        y = min(max(y, 0.0), float(h - 1))
+        try:
+            subdiv.insert((x, y))
+        except Exception:
+            return None
+
+    triangle_list = subdiv.getTriangleList()
+    if triangle_list is None or len(triangle_list) == 0:
+        return None
+
+    triangles: List[Tuple[int, int, int]] = []
+    for tri in triangle_list:
+        pts = np.asarray(
+            [[tri[0], tri[1]], [tri[2], tri[3]], [tri[4], tri[5]]], dtype=np.float32
+        )
+        indices: List[int] = []
+        for pt in pts:
+            distances = np.linalg.norm(dst - pt, axis=1)
+            idx = int(np.argmin(distances))
+            if distances[idx] > 2.0:
+                indices = []
+                break
+            indices.append(idx)
+        if len(indices) == 3:
+            triangle = tuple(indices)
+            if triangle not in triangles:
+                triangles.append(triangle)
+
+    if not triangles:
+        return None
+
+    accumulation = np.zeros_like(crop, dtype=np.float32)
+    weights = np.zeros((h, w, 1), dtype=np.float32)
+
+    for i0, i1, i2 in triangles:
+        src_triangle = src[[i0, i1, i2]]
+        dst_triangle = dst[[i0, i1, i2]]
+
+        src_rect = cv2.boundingRect(src_triangle)
+        dst_rect = cv2.boundingRect(dst_triangle)
+        if src_rect[2] <= 0 or src_rect[3] <= 0 or dst_rect[2] <= 0 or dst_rect[3] <= 0:
+            continue
+
+        x_src, y_src, w_src, h_src = src_rect
+        x_dst, y_dst, w_dst, h_dst = dst_rect
+
+        src_roi = crop[y_src : y_src + h_src, x_src : x_src + w_src]
+        if src_roi.size == 0:
+            continue
+
+        src_offset = src_triangle - np.array([x_src, y_src], dtype=np.float32)
+        dst_offset = dst_triangle - np.array([x_dst, y_dst], dtype=np.float32)
+
+        warp_matrix = cv2.getAffineTransform(src_offset, dst_offset)
+        warped = cv2.warpAffine(
+            src_roi,
+            warp_matrix,
+            (w_dst, h_dst),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+
+        mask = np.zeros((h_dst, w_dst), dtype=np.float32)
+        cv2.fillConvexPoly(mask, np.int32(np.round(dst_offset)), 1.0)
+        mask = mask[:, :, None]
+
+        accumulation_roi = accumulation[y_dst : y_dst + h_dst, x_dst : x_dst + w_dst]
+        weights_roi = weights[y_dst : y_dst + h_dst, x_dst : x_dst + w_dst]
+
+        accumulation_roi += warped.astype(np.float32) * mask
+        weights_roi += mask
+
+    if not np.any(weights > 0):
+        return None
+
+    mask_safe = np.maximum(weights, 1e-6)
+    warped_result = accumulation / mask_safe
+    aligned = np.where(weights > 0, warped_result, crop.astype(np.float32))
+    return np.clip(aligned, 0.0, 255.0).astype(crop.dtype)
 
 
 def _evaluate_crop_mask(
@@ -286,6 +420,7 @@ def _swap_face_with_pixel_boost(
         if feather % 2 == 0:
             feather += 1
 
+        align_enabled = bool(getattr(modules.globals, "align_to_target_pose", align_to_target_pose))
         warped_faces: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
         for crop, matrix, inverse in crops:
             inference_crop = crop
@@ -294,6 +429,19 @@ def _swap_face_with_pixel_boost(
             swapped_crop = run_face_swapper_inference(swapper, inference_crop, source_face.normed_embedding)
             if swapped_crop.shape[0] != crop.shape[0] or swapped_crop.shape[1] != crop.shape[1]:
                 swapped_crop = cv2.resize(swapped_crop, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
+            target_crop_landmarks: Optional[np.ndarray] = None
+            if landmarks_68 is not None:
+                target_crop_landmarks = _transform_landmarks(matrix, landmarks_68)
+            if align_enabled and target_crop_landmarks is not None:
+                detected_landmarks = _detect_landmarks_for_crop(swapped_crop)
+                if detected_landmarks is not None and detected_landmarks.shape == target_crop_landmarks.shape:
+                    warped_crop = _warp_crop_to_landmarks(
+                        swapped_crop,
+                        detected_landmarks,
+                        target_crop_landmarks,
+                    )
+                    if warped_crop is not None:
+                        swapped_crop = warped_crop
             crop_mask = _evaluate_crop_mask(
                 swapped_crop,
                 matrix,
