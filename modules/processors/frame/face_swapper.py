@@ -1,11 +1,12 @@
 import os
 import time
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import insightface
 import threading
 import numpy as np
+import onnxruntime as ort
 
 from modules.face_masker import (
     create_area_mask,
@@ -66,6 +67,124 @@ FFHQ_TEMPLATE = np.array(
     ],
     dtype=np.float32,
 )
+
+
+def _safe_dim_as_int(value: Any) -> Optional[int]:
+    """Attempt to coerce an ONNX dimension descriptor into an int."""
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
+
+def _ensure_face_swapper_metadata(swapper: Any) -> Dict[str, Any]:
+    """
+    Ensure the face swapper instance exposes consistent metadata about its ONNX inputs.
+
+    Returns a dictionary containing:
+        image_input: name of the 4D image input tensor.
+        latent_input: name of the 2D latent/embedding tensor.
+        image_hw: (width, height) tuple inferred from the image tensor shape.
+        ordered_input_names: reordered input list with image first, latent second.
+    """
+    meta = getattr(swapper, "_dlc_metadata", None)
+    if isinstance(meta, dict):
+        return meta
+
+    image_name: Optional[str] = None
+    latent_name: Optional[str] = None
+    image_hw: Optional[Tuple[int, int]] = None
+
+    session = getattr(swapper, "session", None)
+    input_names = list(getattr(swapper, "input_names", []))
+    inputs = []
+    if session is not None:
+        try:
+            inputs = session.get_inputs()
+        except Exception:
+            inputs = []
+
+    for input_info in inputs:
+        name = getattr(input_info, "name", None)
+        shape = getattr(input_info, "shape", []) or []
+        dims = [_safe_dim_as_int(dim) for dim in shape]
+        if len(dims) >= 4:
+            image_name = name or image_name
+            height = dims[2]
+            width = dims[3]
+            if height and width:
+                image_hw = (int(width), int(height))
+        elif len(dims) == 2:
+            latent_name = name or latent_name
+
+    image_tokens = ("image", "img", "target", "input")
+    latent_tokens = ("source", "latent", "id", "embed", "coeff")
+    for candidate in input_names:
+        lower = candidate.lower()
+        if image_name is None and any(token in lower for token in image_tokens):
+            image_name = candidate
+        elif latent_name is None and any(token in lower for token in latent_tokens):
+            latent_name = candidate
+
+    if image_name is None and input_names:
+        image_name = input_names[0]
+    if latent_name is None and len(input_names) > 1:
+        latent_name = next((name for name in input_names if name != image_name), input_names[1])
+
+    ordered_names: List[str] = []
+    if image_name:
+        ordered_names.append(image_name)
+    if latent_name and latent_name not in ordered_names:
+        ordered_names.append(latent_name)
+    for candidate in input_names:
+        if candidate not in ordered_names:
+            ordered_names.append(candidate)
+
+    meta = {
+        "image_input": image_name,
+        "latent_input": latent_name,
+        "image_hw": image_hw,
+        "ordered_input_names": ordered_names,
+    }
+
+    try:
+        if ordered_names:
+            swapper.input_names = ordered_names
+    except Exception:
+        pass
+
+    if image_hw and all(image_hw):
+        try:
+            swapper.input_size = tuple(image_hw)
+        except Exception:
+            pass
+
+    setattr(swapper, "_dlc_metadata", meta)
+    return meta
+
+
+class _GenericOnnxFaceSwapper:
+    """Lightweight wrapper for ONNX models that conform to the face swapper interface."""
+
+    def __init__(self, model_path: str, *, providers: Optional[List[str]] = None):
+        provider_list = list(providers) if providers else None
+        sess_options = ort.SessionOptions()
+        self.session = ort.InferenceSession(
+            model_path,
+            sess_options=sess_options,
+            providers=provider_list,
+        )
+        self.model_file = model_path
+        self.input_names = [tensor.name for tensor in self.session.get_inputs()]
+        self.output_names = [tensor.name for tensor in self.session.get_outputs()]
+        self.input_mean = 0.0
+        self.input_std = 255.0
+        self.emap = None
+        # Ensure metadata (input ordering/size) is aligned with the rest of the pipeline.
+        _ensure_face_swapper_metadata(self)
 
 
 def _extract_landmarks_68(face: Face) -> Optional[np.ndarray]:
@@ -226,25 +345,46 @@ def run_face_swapper_inference(
     crop: np.ndarray,
     source_embedding: np.ndarray,
 ) -> np.ndarray:
+    meta = _ensure_face_swapper_metadata(swapper)
     blob = cv2.dnn.blobFromImage(
         crop,
-        1.0 / float(getattr(swapper, 'input_std', 255.0)),
-        getattr(swapper, 'input_size', (crop.shape[1], crop.shape[0])),
+        1.0 / float(getattr(swapper, "input_std", 255.0)),
+        getattr(swapper, "input_size", (crop.shape[1], crop.shape[0])),
         (
-            float(getattr(swapper, 'input_mean', 0.0)),
-            float(getattr(swapper, 'input_mean', 0.0)),
-            float(getattr(swapper, 'input_mean', 0.0)),
+            float(getattr(swapper, "input_mean", 0.0)),
+            float(getattr(swapper, "input_mean", 0.0)),
+            float(getattr(swapper, "input_mean", 0.0)),
         ),
         swapRB=True,
     )
     latent = source_embedding.reshape((1, -1)).astype(np.float32)
-    emap = getattr(swapper, 'emap', None)
+    emap = getattr(swapper, "emap", None)
     if emap is not None:
         latent = np.dot(latent, emap)
     norm = np.linalg.norm(latent)
     if norm > 0:
         latent /= norm
-    outputs = swapper.session.run(swapper.output_names, {swapper.input_names[0]: blob, swapper.input_names[1]: latent})[0]
+
+    image_input = meta.get("image_input") or (
+        swapper.input_names[0] if getattr(swapper, "input_names", None) else None
+    )
+    latent_input = meta.get("latent_input")
+
+    feeds: Dict[str, np.ndarray] = {}
+    if image_input is None:
+        raise RuntimeError("Face swapper image input tensor could not be determined.")
+    feeds[image_input] = blob
+
+    if latent_input is None:
+        remaining_names = [
+            name for name in getattr(swapper, "input_names", []) if name != image_input
+        ]
+        if not remaining_names:
+            raise RuntimeError("Face swapper latent input tensor could not be determined.")
+        latent_input = remaining_names[0]
+    feeds[latent_input] = latent
+
+    outputs = swapper.session.run(swapper.output_names, feeds)[0]
     img_fake = outputs.transpose((0, 2, 3, 1))[0]
     bgr_fake = np.clip(255.0 * img_fake, 0.0, 255.0).astype(np.uint8)[:, :, ::-1]
     return bgr_fake
@@ -257,6 +397,7 @@ def _swap_face_with_pixel_boost(
     frame: Frame,
 ) -> Optional[Frame]:
     try:
+        meta = _ensure_face_swapper_metadata(swapper)
         template = getattr(modules.globals, 'face_swapper_template', 'arcface') or 'arcface'
         crop_size = int(getattr(modules.globals, 'face_swapper_crop_size', getattr(swapper, 'input_size', (128, 128))[0]) or 128)
         crop_size = max(64, crop_size)
@@ -277,9 +418,13 @@ def _swap_face_with_pixel_boost(
                 explode_pixel_boost(frame, target_face.kps, pixel_boost_count, crop_size, template)
             )
 
-        input_w, input_h = getattr(swapper, 'input_size', (crop_size, crop_size))
-        input_w = int(input_w)
-        input_h = int(input_h)
+        size_tuple = meta.get("image_hw") or getattr(swapper, 'input_size', None)
+        if isinstance(size_tuple, (list, tuple)) and len(size_tuple) == 2:
+            input_w, input_h = size_tuple
+        else:
+            input_w = input_h = crop_size
+        input_w = int(input_w or crop_size)
+        input_h = int(input_h or crop_size)
 
         landmarks_68 = _extract_landmarks_68(target_face)
         feather = max(5, int(round(crop_size * 0.18)))
@@ -753,22 +898,90 @@ def get_face_swapper() -> Any:
             update_status(error_message, NAME)
             raise FileNotFoundError(error_message)
 
+        update_status(
+            f"Loading face swapper model: {os.path.basename(chosen_model_path)}",
+            NAME,
+        )
+
+        providers = list(getattr(modules.globals, "execution_providers", []))
+        provider_arg = providers or None
+        load_exception: Optional[Exception] = None
+        swapper_instance: Optional[Any] = None
+
         try:
-            update_status(
-                f"Loading face swapper model: {os.path.basename(chosen_model_path)}",
-                NAME,
-            )
-            FACE_SWAPPER = insightface.model_zoo.get_model(
+            swapper_instance = insightface.model_zoo.get_model(
                 chosen_model_path,
-                providers=modules.globals.execution_providers,
+                providers=provider_arg,
             )
-            FACE_SWAPPER_MODEL_KEY = selected_key
         except Exception as exc:
-            update_status(
-                f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: {exc}",
-                NAME,
-            )
-            raise
+            load_exception = exc
+
+        if swapper_instance is None:
+            if selected_key == "hyperswap_1a_256":
+                if load_exception is not None:
+                    update_status(
+                        f"InsightFace loader failed for hyperswap_1a_256 ({load_exception}). Retrying with generic ONNX loader.",
+                        NAME,
+                    )
+                else:
+                    update_status(
+                        "InsightFace loader did not recognize hyperswap_1a_256; using generic ONNX loader.",
+                        NAME,
+                    )
+                try:
+                    swapper_instance = _GenericOnnxFaceSwapper(
+                        chosen_model_path,
+                        providers=providers,
+                    )
+                except Exception as fallback_exc:
+                    if load_exception is not None:
+                        update_status(
+                            f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: {load_exception}",
+                            NAME,
+                        )
+                        raise load_exception from fallback_exc
+                    update_status(
+                        f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: {fallback_exc}",
+                        NAME,
+                    )
+                    raise
+            elif load_exception is not None:
+                update_status(
+                    f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: {load_exception}",
+                    NAME,
+                )
+                raise load_exception
+            else:
+                update_status(
+                    f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: unsupported ONNX format.",
+                    NAME,
+                )
+                raise RuntimeError(
+                    f"Unsupported face swapper model format for '{selected_key}'."
+                )
+
+        FACE_SWAPPER = swapper_instance
+        FACE_SWAPPER_MODEL_KEY = selected_key
+        meta = _ensure_face_swapper_metadata(FACE_SWAPPER)
+
+        if selected_key == "hyperswap_1a_256":
+            inferred_size = meta.get("image_hw")
+            inferred_width = int(inferred_size[0]) if inferred_size and inferred_size[0] else None
+            current_crop = getattr(modules.globals, "face_swapper_crop_size", None)
+            if inferred_width and (not current_crop or current_crop < inferred_width):
+                modules.globals.face_swapper_crop_size = inferred_width
+                update_status(
+                    f"Adjusted face swapper crop size to {inferred_width} to match hyperswap_1a_256 input.",
+                    NAME,
+                )
+
+        if providers:
+            try:
+                applied = FACE_SWAPPER.session.get_providers()
+            except Exception:
+                applied = None
+            if applied:
+                update_status(f"Applied providers: {list(applied)}", NAME)
 
     return FACE_SWAPPER
 
