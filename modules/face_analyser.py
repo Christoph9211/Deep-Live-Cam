@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 from typing import Any
@@ -11,6 +12,11 @@ from modules.typing import Frame
 from modules.cluster_analysis import find_cluster_centroids, find_closest_centroid
 from modules.utilities import get_temp_directory_path, create_temp, extract_frames, clean_temp, get_temp_frame_paths
 from pathlib import Path
+from modules.face_landmarker import (
+    detect_face_landmarks,
+    extract_existing_landmarks,
+    get_cached_landmarks,
+)
 
 FACE_ANALYSER = None
 
@@ -24,6 +30,75 @@ def get_face_analyser() -> Any:
     return FACE_ANALYSER
 
 
+def _estimate_face_roll(face: Any) -> float:
+    pose = getattr(face, 'pose', None)
+    if pose is not None:
+        try:
+            arr = np.asarray(pose, dtype=np.float32).flatten()
+            if arr.size >= 3 and math.isfinite(float(arr[2])):
+                return float(arr[2])
+        except Exception:
+            pass
+    kps = getattr(face, 'kps', None)
+    if kps is not None:
+        try:
+            arr = np.asarray(kps, dtype=np.float32)
+            if arr.shape[0] >= 2:
+                left_eye = arr[0]
+                right_eye = arr[1]
+                dx = float(right_eye[0] - left_eye[0])
+                dy = float(right_eye[1] - left_eye[1])
+                if dx != 0.0 or dy != 0.0:
+                    return float(np.degrees(np.arctan2(dy, dx)))
+        except Exception:
+            pass
+    return 0.0
+
+
+def _ensure_face_landmarks(frame: Frame, faces: Any) -> Any:
+    if not faces:
+        return faces
+    for face in faces:
+        try:
+            landmark_set = getattr(face, 'landmark_set', None)
+            if not isinstance(landmark_set, dict):
+                landmark_set = {}
+
+            cached = get_cached_landmarks(face, '68')
+            if cached is None:
+                existing = extract_existing_landmarks(face, 68)
+                if existing is not None:
+                    landmark_set['68'] = existing.astype(np.float32)
+                    models = getattr(face, 'landmark_models', None)
+                    if not isinstance(models, dict):
+                        models = {}
+                    models.setdefault('68', {'set': 'insightface', 'model': 'builtin'})
+                    face.landmark_models = models
+
+            if '68' not in landmark_set:
+                bbox = getattr(face, 'bbox', None)
+                if bbox is not None:
+                    angle = _estimate_face_roll(face)
+                    result = detect_face_landmarks(frame, bbox, angle)
+                    if result is not None:
+                        landmark_set['68'] = result.points.astype(np.float32)
+                        scores = getattr(face, 'landmark_scores', None)
+                        if not isinstance(scores, dict):
+                            scores = {}
+                        scores['68'] = result.score
+                        face.landmark_scores = scores
+                        models = getattr(face, 'landmark_models', None)
+                        if not isinstance(models, dict):
+                            models = {}
+                        models['68'] = {'set': result.set_name, 'model': result.model_name}
+                        face.landmark_models = models
+
+            face.landmark_set = landmark_set
+        except Exception:
+            continue
+    return faces
+
+
 def get_one_face(frame: Frame) -> Any:
     """
     Detects the face with the leftmost bounding box in the given frame.
@@ -35,6 +110,7 @@ def get_one_face(frame: Frame) -> Any:
         The face object with the leftmost bounding box, or None if no faces are detected.
     """
     face = get_face_analyser().get(frame)
+    face = _ensure_face_landmarks(frame, face)
     try:
         return min(face, key=lambda x: x.bbox[0])
     except ValueError:
@@ -52,7 +128,8 @@ def get_many_faces(frame: Frame) -> Any:
         The list of detected faces, or None if no faces are detected.
     """
     try:
-        return get_face_analyser().get(frame)
+        faces = get_face_analyser().get(frame)
+        return _ensure_face_landmarks(frame, faces)
     except IndexError:
         return None
 
