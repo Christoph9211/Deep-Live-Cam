@@ -41,6 +41,14 @@ show_mouth_mask_box = False
 mask_feather_ratio = 8
 mask_down_size = 0.50
 mask_size = 1
+face_mask_box = False
+face_mask_occlusion = False
+face_mask_area = False
+face_mask_region = False
+face_mask_blur = 0.3
+face_mask_padding = [0.0, 0.0, 0.0, 0.0]
+face_mask_areas = ["upper-face", "lower-face", "mouth"]
+face_mask_regions = ["skin"]
 
 # Landmark smoothing (One-Euro filter)
 smoothing_enabled = False

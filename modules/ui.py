@@ -8,6 +8,7 @@ from PIL import Image, ImageOps
 import time
 import json
 import modules.globals
+import modules.face_masker
 import modules.metadata
 from modules.face_analyser import (
     get_one_face,
@@ -108,6 +109,15 @@ def save_switch_states():
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
         "mask_size": modules.globals.mask_size,
         "mask_feather_ratio": modules.globals.mask_feather_ratio,
+        "mask_down_size": modules.globals.mask_down_size,
+        "face_mask_box": modules.globals.face_mask_box,
+        "face_mask_occlusion": modules.globals.face_mask_occlusion,
+        "face_mask_area": modules.globals.face_mask_area,
+        "face_mask_region": modules.globals.face_mask_region,
+        "face_mask_blur": modules.globals.face_mask_blur,
+        "face_mask_padding": list(modules.globals.face_mask_padding),
+        "face_mask_areas": list(modules.globals.face_mask_areas),
+        "face_mask_regions": list(modules.globals.face_mask_regions),
         # New semantic preservation + smoothing + backend
         "preserve_teeth": modules.globals.preserve_teeth,
         "preserve_hairline": modules.globals.preserve_hairline,
@@ -154,6 +164,36 @@ def load_switch_states():
         modules.globals.mask_feather_ratio = switch_states.get(
             "mask_feather_ratio", modules.globals.mask_feather_ratio
         )
+        modules.globals.mask_down_size = switch_states.get(
+            "mask_down_size", modules.globals.mask_down_size
+        )
+        modules.globals.face_mask_box = switch_states.get(
+            "face_mask_box", modules.globals.face_mask_box
+        )
+        modules.globals.face_mask_occlusion = switch_states.get(
+            "face_mask_occlusion", modules.globals.face_mask_occlusion
+        )
+        modules.globals.face_mask_area = switch_states.get(
+            "face_mask_area", modules.globals.face_mask_area
+        )
+        modules.globals.face_mask_region = switch_states.get(
+            "face_mask_region", modules.globals.face_mask_region
+        )
+        modules.globals.face_mask_blur = switch_states.get(
+            "face_mask_blur", modules.globals.face_mask_blur
+        )
+        padding = switch_states.get("face_mask_padding", modules.globals.face_mask_padding)
+        if isinstance(padding, (list, tuple)):
+            values = [float(p) for p in list(padding)[:4]]
+            while len(values) < 4:
+                values.append(0.0)
+            modules.globals.face_mask_padding = values
+        areas = switch_states.get("face_mask_areas", modules.globals.face_mask_areas)
+        if isinstance(areas, list):
+            modules.globals.face_mask_areas = [str(a) for a in areas]
+        regions = switch_states.get("face_mask_regions", modules.globals.face_mask_regions)
+        if isinstance(regions, list):
+            modules.globals.face_mask_regions = [str(r) for r in regions]
         # New semantic preservation + smoothing + backend
         modules.globals.preserve_teeth = switch_states.get("preserve_teeth", False)
         modules.globals.preserve_hairline = switch_states.get("preserve_hairline", False)
@@ -570,6 +610,171 @@ def open_advanced_popup(root: ctk.CTk) -> None:
     occ_slider = ctk.CTkSlider(frame, from_=0.0, to=1.0, number_of_steps=100, command=on_occ_change, width=200)
     occ_slider.set(float(modules.globals.occlusion_sensitivity))
     occ_slider.grid(row=row+1, column=1, padx=10, pady=6, sticky="ew")
+    row += 2
+
+    # Face mask configuration
+    mask_header = ctk.CTkLabel(frame, text=_("Face Masking"))
+    mask_header.grid(row=row, column=0, padx=10, pady=(12, 6), sticky="w")
+    row += 1
+
+    mask_box_var = ctk.BooleanVar(value=modules.globals.face_mask_box)
+    mask_box_switch = ctk.CTkSwitch(
+        frame,
+        text=_("Box Mask"),
+        variable=mask_box_var,
+        cursor="hand2",
+        command=lambda: (
+            setattr(modules.globals, "face_mask_box", mask_box_var.get()),
+            save_switch_states(),
+        ),
+    )
+    mask_box_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    mask_occ_var = ctk.BooleanVar(value=modules.globals.face_mask_occlusion)
+    mask_occ_switch = ctk.CTkSwitch(
+        frame,
+        text=_("Occlusion Mask"),
+        variable=mask_occ_var,
+        cursor="hand2",
+        command=lambda: (
+            setattr(modules.globals, "face_mask_occlusion", mask_occ_var.get()),
+            save_switch_states(),
+        ),
+    )
+    mask_occ_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    row += 1
+
+    mask_area_var = ctk.BooleanVar(value=modules.globals.face_mask_area)
+    mask_area_switch = ctk.CTkSwitch(
+        frame,
+        text=_("Area Mask"),
+        variable=mask_area_var,
+        cursor="hand2",
+        command=lambda: (
+            setattr(modules.globals, "face_mask_area", mask_area_var.get()),
+            save_switch_states(),
+        ),
+    )
+    mask_area_switch.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    mask_region_var = ctk.BooleanVar(value=modules.globals.face_mask_region)
+    mask_region_switch = ctk.CTkSwitch(
+        frame,
+        text=_("Region Mask"),
+        variable=mask_region_var,
+        cursor="hand2",
+        command=lambda: (
+            setattr(modules.globals, "face_mask_region", mask_region_var.get()),
+            save_switch_states(),
+        ),
+    )
+    mask_region_switch.grid(row=row, column=1, padx=10, pady=6, sticky="w")
+    row += 1
+
+    mask_blur_label = ctk.CTkLabel(
+        frame,
+        text=f"{_('Mask Blur')}: {modules.globals.face_mask_blur:.2f}",
+    )
+    mask_blur_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    def on_mask_blur_change(val: float) -> None:
+        modules.globals.face_mask_blur = float(round(val, 3))
+        mask_blur_label.configure(
+            text=f"{_('Mask Blur')}: {modules.globals.face_mask_blur:.2f}"
+        )
+        save_switch_states()
+
+    mask_blur_slider = ctk.CTkSlider(
+        frame,
+        from_=0.0,
+        to=1.0,
+        number_of_steps=100,
+        command=on_mask_blur_change,
+        width=200,
+    )
+    mask_blur_slider.set(float(modules.globals.face_mask_blur))
+    mask_blur_slider.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    padding_label = ctk.CTkLabel(frame, text=_("Mask Padding (%)"))
+    padding_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    padding_frame = ctk.CTkFrame(frame)
+    padding_frame.grid(row=row + 1, column=0, columnspan=2, padx=10, pady=6, sticky="ew")
+    padding_names = [_("Top"), _("Right"), _("Bottom"), _("Left")]
+    current_padding = list(modules.globals.face_mask_padding)
+    while len(current_padding) < 4:
+        current_padding.append(0.0)
+    padding_vars = [ctk.StringVar(value=f"{max(0.0, float(current_padding[idx])):.2f}") for idx in range(4)]
+
+    def update_padding_values() -> None:
+        values: list[float] = []
+        for var in padding_vars:
+            try:
+                values.append(max(0.0, float(var.get())))
+            except (TypeError, ValueError):
+                values.append(0.0)
+        modules.globals.face_mask_padding = values[:4]
+        save_switch_states()
+
+    for idx, name in enumerate(padding_names):
+        lbl = ctk.CTkLabel(padding_frame, text=name)
+        lbl.grid(row=0, column=idx, padx=6, pady=(4, 2), sticky="w")
+        entry = ctk.CTkEntry(padding_frame, textvariable=padding_vars[idx], width=70)
+        entry.grid(row=1, column=idx, padx=6, pady=(0, 4), sticky="ew")
+        entry.bind("<FocusOut>", lambda _event: update_padding_values())
+        entry.bind("<Return>", lambda _event: update_padding_values())
+    row += 2
+
+    area_label = ctk.CTkLabel(frame, text=_("Area Mask Selection"))
+    area_label.grid(row=row, column=0, padx=10, pady=(6, 2), sticky="w")
+    area_frame = ctk.CTkFrame(frame)
+    area_frame.grid(row=row + 1, column=0, columnspan=2, padx=10, pady=6, sticky="ew")
+    area_vars: dict[str, ctk.BooleanVar] = {}
+
+    def refresh_area_selection() -> None:
+        modules.globals.face_mask_areas = [
+            name for name, var in area_vars.items() if var.get()
+        ]
+        save_switch_states()
+
+    for idx, name in enumerate(modules.face_masker.available_area_names()):
+        display = name.replace("-", " ").title()
+        var = ctk.BooleanVar(value=name in modules.globals.face_mask_areas)
+        area_vars[name] = var
+        chk = ctk.CTkCheckBox(
+            area_frame,
+            text=display,
+            variable=var,
+            command=refresh_area_selection,
+        )
+        chk.grid(row=idx // 2, column=idx % 2, padx=6, pady=4, sticky="w")
+    row += 2
+
+    region_label = ctk.CTkLabel(frame, text=_("Region Mask Selection"))
+    region_label.grid(row=row, column=0, padx=10, pady=(6, 2), sticky="w")
+    region_frame = ctk.CTkFrame(frame)
+    region_frame.grid(row=row + 1, column=0, columnspan=2, padx=10, pady=6, sticky="ew")
+    region_vars: dict[str, ctk.BooleanVar] = {}
+
+    def refresh_region_selection() -> None:
+        modules.globals.face_mask_regions = [
+            name for name, var in region_vars.items() if var.get()
+        ]
+        save_switch_states()
+
+    region_names = modules.face_masker.available_region_names()
+    for idx, name in enumerate(region_names):
+        display = name.replace("-", " ").title()
+        var = ctk.BooleanVar(value=name in modules.globals.face_mask_regions)
+        region_vars[name] = var
+        chk = ctk.CTkCheckBox(
+            region_frame,
+            text=display,
+            variable=var,
+            command=refresh_region_selection,
+        )
+        chk.grid(row=idx // 3, column=idx % 3, padx=6, pady=4, sticky="w")
     row += 2
 
     # Pixel boost pipeline

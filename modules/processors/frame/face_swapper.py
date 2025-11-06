@@ -7,6 +7,13 @@ import insightface
 import threading
 import numpy as np
 
+from modules.face_masker import (
+    create_area_mask,
+    create_box_mask,
+    create_occlusion_mask,
+    create_region_mask,
+)
+
 import modules.globals
 import modules.processors.frame.core
 # Ensure update_status is imported if not already globally accessible
@@ -57,6 +64,88 @@ FFHQ_TEMPLATE = np.array(
     ],
     dtype=np.float32,
 )
+
+
+def _extract_landmarks_68(face: Face) -> Optional[np.ndarray]:
+    """Attempt to extract 68 landmark coordinates from an InsightFace face."""
+    candidates = [
+        getattr(face, "landmark_2d_68", None),
+        getattr(face, "landmark_3d_68", None),
+        getattr(face, "landmark_2d_106", None),
+    ]
+    for data in candidates:
+        if data is None:
+            continue
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.ndim == 3 and arr.shape[1] >= 2:
+            arr = arr[:, :, :2].reshape(arr.shape[0], 2)
+        if arr.ndim == 2 and arr.shape[1] >= 2 and arr.shape[0] >= 3:
+            if arr.shape[0] >= 68:
+                return arr[:68, :2]
+            # Fallback: accept any dense landmark set >=68 by sampling first 68
+            if arr.shape[0] > 68:
+                return arr[:68, :2]
+    return None
+
+
+def _transform_landmarks(matrix: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
+    pts = np.asarray(landmarks, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] < 2:
+        return pts
+    ones = np.ones((pts.shape[0], 1), dtype=np.float32)
+    hom = np.concatenate([pts[:, :2], ones], axis=1)
+    transformed = np.dot(matrix.astype(np.float32), hom.T).T
+    return transformed[:, :2]
+
+
+def _evaluate_crop_mask(
+    crop: np.ndarray,
+    matrix: np.ndarray,
+    landmarks_68: Optional[np.ndarray],
+    feather: int,
+    *,
+    occlusion_source: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    mask_components: List[np.ndarray] = []
+    padding = getattr(modules.globals, "face_mask_padding", [0.0, 0.0, 0.0, 0.0])
+    if getattr(modules.globals, "face_mask_box", False):
+        mask_components.append(
+            create_box_mask(
+                crop,
+                float(getattr(modules.globals, "face_mask_blur", 0.0) or 0.0),
+                padding,
+            )
+        )
+    if getattr(modules.globals, "face_mask_occlusion", False):
+        source = occlusion_source if occlusion_source is not None else crop
+        mask_components.append(create_occlusion_mask(source))
+    if getattr(modules.globals, "face_mask_area", False) and landmarks_68 is not None:
+        crop_landmarks = _transform_landmarks(matrix, landmarks_68)
+        mask_components.append(
+            create_area_mask(
+                crop,
+                crop_landmarks,
+                getattr(modules.globals, "face_mask_areas", []),
+            )
+        )
+    if getattr(modules.globals, "face_mask_region", False):
+        mask_components.append(
+            create_region_mask(
+                crop,
+                getattr(modules.globals, "face_mask_regions", []),
+            )
+        )
+
+    if mask_components:
+        mask = mask_components[0]
+        if len(mask_components) > 1:
+            mask = np.minimum.reduce(mask_components)
+        mask = np.clip(mask, 0.0, 1.0)
+    else:
+        mask = np.ones((crop.shape[0], crop.shape[1]), dtype=np.float32)
+        if feather >= 3:
+            mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+    return mask.astype(np.float32, copy=False)
 
 
 def _reference_landmarks(template: str, image_size: int, scale: float = 1.0) -> np.ndarray:
@@ -199,7 +288,12 @@ def _swap_face_with_pixel_boost(
         input_w = int(input_w)
         input_h = int(input_h)
 
-        warped_faces: List[Tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        landmarks_68 = _extract_landmarks_68(target_face)
+        feather = max(5, int(round(crop_size * 0.18)))
+        if feather % 2 == 0:
+            feather += 1
+
+        warped_faces: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
         for crop, matrix, inverse in crops:
             inference_crop = crop
             if inference_crop.shape[1] != input_w or inference_crop.shape[0] != input_h:
@@ -207,17 +301,19 @@ def _swap_face_with_pixel_boost(
             swapped_crop = run_face_swapper_inference(swapper, inference_crop, source_face.normed_embedding)
             if swapped_crop.shape[0] != crop.shape[0] or swapped_crop.shape[1] != crop.shape[1]:
                 swapped_crop = cv2.resize(swapped_crop, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
-            warped_faces.append((swapped_crop, matrix, inverse))
+            crop_mask = _evaluate_crop_mask(
+                swapped_crop,
+                matrix,
+                landmarks_68,
+                feather,
+                occlusion_source=crop,
+            )
+            warped_faces.append((swapped_crop, matrix, inverse, crop_mask))
 
-        feather = max(5, int(round(crop_size * 0.18)))
-        if feather % 2 == 0:
-            feather += 1
         accum = np.zeros_like(frame, dtype=np.float32)
         mask_accum = np.zeros((frame.shape[0], frame.shape[1], 1), dtype=np.float32)
-        for swapped_crop, _, inverse in warped_faces:
-            mask = np.ones((swapped_crop.shape[0], swapped_crop.shape[1]), dtype=np.float32)
-            if feather >= 3:
-                mask = cv2.GaussianBlur(mask, (feather, feather), 0)
+        for swapped_crop, _, inverse, crop_mask in warped_faces:
+            mask = crop_mask.astype(np.float32, copy=False)
             warped_face = cv2.warpAffine(
                 swapped_crop.astype(np.float32),
                 inverse,
