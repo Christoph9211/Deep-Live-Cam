@@ -1,4 +1,4 @@
-import os  # <-- Added for os.path.exists
+import os
 import time
 import math
 from typing import Any, List, Optional, Tuple
@@ -40,6 +40,7 @@ except Exception:
         get_semantic_region_masks = None  # type: ignore
 
 FACE_SWAPPER = None
+FACE_SWAPPER_MODEL_KEY: Optional[str] = None
 THREAD_LOCK = threading.Lock()
 NAME = 'DLC.FACE-SWAPPER'
 
@@ -699,48 +700,76 @@ def pre_start() -> bool:
 
 
 def get_face_swapper() -> Any:
-    """
-    Returns the face swapper model instance.
+    """Return the currently configured face swapper model instance."""
 
-    This function will load the face swapper model from disk if it has not been loaded before.
-    It will first try to load the FP32 model, and if that fails, it will try to load the FP16 model.
-    If neither model is found, it will raise a FileNotFoundError.
+    global FACE_SWAPPER, FACE_SWAPPER_MODEL_KEY
 
-    The function is thread-safe and will block other threads until the model is loaded or an exception is thrown.
-    """
-    global FACE_SWAPPER
+    selected_key = getattr(modules.globals, "face_swapper_model", "inswapper_128")
+    model_options = getattr(modules.globals, "FACE_SWAPPER_MODEL_OPTIONS", {})
+    if selected_key not in model_options and model_options:
+        selected_key = next(iter(model_options))
+        modules.globals.face_swapper_model = selected_key
 
     with THREAD_LOCK:
-        if FACE_SWAPPER is None:
-            # --- MODIFICATION START ---
-            # Define paths for both FP32 and FP16 models
-            model_dir = resolve_relative_path('../models')
-            model_path_fp32 = os.path.join(model_dir, 'inswapper_128.onnx')
-            model_path_fp16 = os.path.join(model_dir, 'inswapper_128_fp16.onnx')
-            chosen_model_path = None
+        if FACE_SWAPPER is not None and FACE_SWAPPER_MODEL_KEY == selected_key:
+            return FACE_SWAPPER
 
-            # Prioritize FP32 model
-            if os.path.exists(model_path_fp32):
-                chosen_model_path = model_path_fp32
-                update_status(f"Loading FP32 model: {os.path.basename(chosen_model_path)}", NAME)
-            # Fallback to FP16 model
-            elif os.path.exists(model_path_fp16):
-                chosen_model_path = model_path_fp16
-                update_status(f"FP32 model not found. Loading FP16 model: {os.path.basename(chosen_model_path)}", NAME)
-            # Error if neither model is found
-            else:
-                error_message = f"Face Swapper model not found. Please ensure 'inswapper_128.onnx' (recommended) or 'inswapper_128_fp16.onnx' exists in the '{model_dir}' directory."
-                update_status(error_message, NAME)
-                raise FileNotFoundError(error_message)
+        FACE_SWAPPER = None
+        FACE_SWAPPER_MODEL_KEY = None
 
-            # Load the chosen model
-            try:
-                FACE_SWAPPER = insightface.model_zoo.get_model(chosen_model_path, providers=modules.globals.execution_providers)
-            except Exception as e:
-                update_status(f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: {e}", NAME)
-                # Optionally, re-raise the exception or handle it more gracefully
-                raise e
-            # --- MODIFICATION END ---
+        option = model_options.get(selected_key, {})
+        candidate_files = option.get("filenames") or option.get("files") or []
+        if isinstance(candidate_files, str):
+            candidate_files = [candidate_files]
+        candidate_files = [str(name) for name in candidate_files if name]
+
+        model_dir = resolve_relative_path("../models")
+        searched_paths: List[str] = []
+        chosen_model_path: Optional[str] = None
+
+        for filename in candidate_files:
+            path = os.path.join(model_dir, filename)
+            searched_paths.append(path)
+            if os.path.exists(path):
+                chosen_model_path = path
+                break
+
+        if chosen_model_path is None and selected_key == "inswapper_128":
+            fp16_path = os.path.join(model_dir, "inswapper_128_fp16.onnx")
+            searched_paths.append(fp16_path)
+            if os.path.exists(fp16_path):
+                chosen_model_path = fp16_path
+                update_status(
+                    "Preferred InSwapper model not found. Falling back to inswapper_128_fp16.onnx.",
+                    NAME,
+                )
+
+        if chosen_model_path is None:
+            checked = ", ".join(os.path.basename(path) for path in searched_paths if path)
+            error_message = (
+                f"Face Swapper model '{selected_key}' not found. "
+                f"Checked: {checked or 'no candidate files provided.'}"
+            )
+            update_status(error_message, NAME)
+            raise FileNotFoundError(error_message)
+
+        try:
+            update_status(
+                f"Loading face swapper model: {os.path.basename(chosen_model_path)}",
+                NAME,
+            )
+            FACE_SWAPPER = insightface.model_zoo.get_model(
+                chosen_model_path,
+                providers=modules.globals.execution_providers,
+            )
+            FACE_SWAPPER_MODEL_KEY = selected_key
+        except Exception as exc:
+            update_status(
+                f"Error loading Face Swapper model {os.path.basename(chosen_model_path)}: {exc}",
+                NAME,
+            )
+            raise
+
     return FACE_SWAPPER
 
 def build_skin_sdf_mask(roi_shape, kps_xy, offset_xy, landmark_spec, forehead_pad_frac, edge_width_px, inner_bias_px, gamma):

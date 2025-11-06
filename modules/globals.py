@@ -79,5 +79,19 @@ occlusion_sensitivity = 0.5
 # Pixel-boost face swap pipeline options
 use_pixel_boost_pipeline = False
 pixel_boost_count = 0
+FACE_SWAPPER_MODEL_OPTIONS: Dict[str, Dict[str, Any]] = {
+    "inswapper_128": {
+        "label": "InSwapper 1.0 (128)",
+        "filenames": ["inswapper_128.onnx", "inswapper_128_fp16.onnx"],
+        "recommended_crop_size": 128,
+    },
+    "hyperswap_1a_256": {
+        "label": "HyperSwap 1A (256)",
+        "filenames": ["hyperswap_1a_256.onnx"],
+        "recommended_crop_size": 256,
+    },
+}
+
+face_swapper_model: str = "inswapper_128"
 face_swapper_template = 'arcface'
 face_swapper_crop_size = 128
