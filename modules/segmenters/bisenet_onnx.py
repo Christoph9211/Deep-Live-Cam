@@ -29,9 +29,9 @@ def _models_dir() -> str:
 def _preferred_model_names() -> list[str]:
     # Accept common filenames for BiSeNet face parsing exports
     return [
-        'face_parsing_bisenet_19.onnx',
-        'bisenet_resnet18_19.onnx',
-        'resnet34.onnx',
+        'modules\\models\\bisenet_resnet_34.onnx',
+        'bisenet_resnet_34.onnx',
+        'resnet_34.onnx',
     ]
 
 
@@ -50,7 +50,7 @@ def _existing_model_path() -> Optional[str]:
 
 def _model_path() -> str:
     # Default path used if downloading via URL
-    return os.path.join(_models_dir(), 'resnet34.onnx')
+    return os.path.join(_models_dir(), 'bisenet_resnet_34.onnx')
 
 
 def _candidate_urls() -> list[str]:
