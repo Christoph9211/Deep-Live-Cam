@@ -103,6 +103,8 @@ def _evaluate_crop_mask(
     matrix: np.ndarray,
     landmarks_68: Optional[np.ndarray],
     feather: int,
+    *,
+    occlusion_source: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     mask_components: List[np.ndarray] = []
     padding = getattr(modules.globals, "face_mask_padding", [0.0, 0.0, 0.0, 0.0])
@@ -115,7 +117,8 @@ def _evaluate_crop_mask(
             )
         )
     if getattr(modules.globals, "face_mask_occlusion", False):
-        mask_components.append(create_occlusion_mask(crop))
+        source = occlusion_source if occlusion_source is not None else crop
+        mask_components.append(create_occlusion_mask(source))
     if getattr(modules.globals, "face_mask_area", False) and landmarks_68 is not None:
         crop_landmarks = _transform_landmarks(matrix, landmarks_68)
         mask_components.append(
@@ -298,7 +301,13 @@ def _swap_face_with_pixel_boost(
             swapped_crop = run_face_swapper_inference(swapper, inference_crop, source_face.normed_embedding)
             if swapped_crop.shape[0] != crop.shape[0] or swapped_crop.shape[1] != crop.shape[1]:
                 swapped_crop = cv2.resize(swapped_crop, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
-            crop_mask = _evaluate_crop_mask(swapped_crop, matrix, landmarks_68, feather)
+            crop_mask = _evaluate_crop_mask(
+                swapped_crop,
+                matrix,
+                landmarks_68,
+                feather,
+                occlusion_source=crop,
+            )
             warped_faces.append((swapped_crop, matrix, inverse, crop_mask))
 
         accum = np.zeros_like(frame, dtype=np.float32)
