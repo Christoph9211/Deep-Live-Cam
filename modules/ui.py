@@ -135,6 +135,7 @@ def save_switch_states():
         "use_pixel_boost_pipeline": modules.globals.use_pixel_boost_pipeline,
         "pixel_boost_count": modules.globals.pixel_boost_count,
         "face_swapper_template": modules.globals.face_swapper_template,
+        "face_swapper_model": modules.globals.face_swapper_model,
         "face_swapper_crop_size": modules.globals.face_swapper_crop_size,
     }
     with open("switch_states.json", "w") as f:
@@ -211,6 +212,7 @@ def load_switch_states():
         modules.globals.use_pixel_boost_pipeline = switch_states.get("use_pixel_boost_pipeline", modules.globals.use_pixel_boost_pipeline)
         modules.globals.pixel_boost_count = switch_states.get("pixel_boost_count", modules.globals.pixel_boost_count)
         modules.globals.face_swapper_template = switch_states.get("face_swapper_template", modules.globals.face_swapper_template)
+        modules.globals.face_swapper_model = switch_states.get("face_swapper_model", modules.globals.face_swapper_model)
         modules.globals.face_swapper_crop_size = switch_states.get("face_swapper_crop_size", modules.globals.face_swapper_crop_size)
     except FileNotFoundError:
         # If the file doesn't exist, use default values
@@ -843,6 +845,69 @@ def open_advanced_popup(root: ctk.CTk) -> None:
         command=on_size_change,
     )
     size_menu.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
+    row += 1
+
+    def sync_crop_size_from_model(option: dict[str, object]) -> None:
+        recommended = option.get("recommended_crop_size") if isinstance(option, dict) else None
+        try:
+            recommended_int = int(recommended) if recommended is not None else None
+        except (TypeError, ValueError):
+            recommended_int = None
+        if recommended_int is None:
+            return
+        value_str = str(recommended_int)
+        if value_str not in size_values:
+            size_values.append(value_str)
+            size_values.sort(key=int)
+            size_menu.configure(values=size_values)
+        on_size_change(value_str)
+
+    model_label = ctk.CTkLabel(frame, text=_("Face Swapper Model"))
+    model_label.grid(row=row, column=0, padx=10, pady=6, sticky="w")
+
+    model_options = modules.globals.FACE_SWAPPER_MODEL_OPTIONS
+    model_label_map: dict[str, str] = {}
+    model_values: list[str] = []
+    for option_key, option_value in model_options.items():
+        label = option_value.get("label") if isinstance(option_value, dict) else None
+        label_str = str(label) if label else str(option_key)
+        if label_str in model_label_map:
+            label_str = f"{label_str} ({option_key})"
+        model_label_map[label_str] = option_key
+        model_values.append(label_str)
+
+    if not model_values:
+        fallback_key = modules.globals.face_swapper_model or "inswapper_128"
+        model_label_map[fallback_key] = fallback_key
+        model_values.append(fallback_key)
+
+    current_key = modules.globals.face_swapper_model
+    if current_key not in model_options:
+        current_key = model_label_map[model_values[0]]
+        modules.globals.face_swapper_model = current_key
+    current_label = next(
+        (label for label, key in model_label_map.items() if key == current_key),
+        model_values[0],
+    )
+
+    model_var = ctk.StringVar(value=current_label)
+
+    def on_model_change(selected_label: str) -> None:
+        key = model_label_map.get(selected_label)
+        if key is None:
+            return
+        modules.globals.face_swapper_model = key
+        option = model_options.get(key, {})
+        sync_crop_size_from_model(option)
+        save_switch_states()
+
+    model_menu = ctk.CTkOptionMenu(
+        frame,
+        variable=model_var,
+        values=model_values,
+        command=on_model_change,
+    )
+    model_menu.grid(row=row, column=1, padx=10, pady=6, sticky="ew")
     row += 1
 
     # Smoothing toggles
